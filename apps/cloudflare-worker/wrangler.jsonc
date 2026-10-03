@@ -1,0 +1,126 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "private-media-downloader",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-18",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "enabled": true, "invocation_logs": true, "persist": true },
+    "traces": { "enabled": false, "head_sampling_rate": 0, "persist": false }
+  },
+  "vars": {
+    "INTEGRATION_ENABLED": "true",
+    "INTEGRATION_ALLOWED_ORIGINS": "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,chrome-extension://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "ALLOWED_SOURCE_HOSTS": "youtube.com,www.youtube.com,m.youtube.com,music.youtube.com,youtu.be,instagram.com,www.instagram.com,tiktok.com,www.tiktok.com,vm.tiktok.com,vt.tiktok.com,x.com,www.x.com,twitter.com,www.twitter.com,vimeo.com,www.vimeo.com,player.vimeo.com,reddit.com,www.reddit.com,old.reddit.com,np.reddit.com,nm.reddit.com,redditmedia.com,www.redditmedia.com,pinterest.com,www.pinterest.com,pinterest.ca,www.pinterest.ca,co.pinterest.com,www.ted.com,embed.ted.com,embed-ssl.ted.com",
+    "DEFAULT_MAX_HEIGHT": "1080",
+    "MAX_REQUEST_BODY_BYTES": "16384",
+    "MAX_MEDIA_DURATION_SECONDS": "7200",
+    "MAX_SOURCE_BYTES": "524288000",
+    "MAX_TEMP_DISK_BYTES": "1000000000",
+    "MAX_TELEGRAM_BYTES": "49000000",
+    "MAX_URL_LENGTH": "2048",
+    "DOWNLOAD_TIMEOUT_SECONDS": "1200",
+    "PROBE_TIMEOUT_SECONDS": "90",
+    "FFMPEG_TIMEOUT_SECONDS": "600",
+    "TELEGRAM_UPLOAD_TIMEOUT_SECONDS": "600",
+    "PROCESS_TERM_GRACE_SECONDS": "10",
+    "MAX_RETRIES": "2",
+    "STRICT_DEPENDENCIES": "true",
+    "MAX_JOBS_PER_HOUR": "20",
+    "MAX_ACTIVE_JOBS": "1",
+    "MAX_ACTIVE_TRANSCRIPTIONS": "1",
+    "JOB_TIMEOUT_SECONDS": "1200",
+    "MAX_TRANSCRIPT_DURATION_SECONDS": "900",
+    "TRANSCRIPTION_TIMEOUT_SECONDS": "1800",
+    "R2_LINK_TTL_SECONDS": "3600",
+    "R2_RETENTION_SECONDS": "86400",
+    "PUBLIC_WORKER_BASE_URL": "https://digibot.example.workers.dev",
+    "TELEGRAM_BOT_API_BASE": "https://api.telegram.org",
+    "R2_BUCKET_NAME": "private-media-downloader-media",
+    "R2_ENDPOINT": "https://00000000000000000000000000000000.r2.cloudflarestorage.com"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "downloader_telegram",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MEDIA_BUCKET",
+      "bucket_name": "private-media-downloader-media"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "DOWNLOADER_CONTAINER",
+        "class_name": "DownloaderContainer"
+      },
+      {
+        "name": "TRANSCRIPTION_CONTAINER",
+        "class_name": "TranscriptionContainer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["DownloaderContainer"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["NewsScheduler"]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["TranscriptionContainer"]
+    }
+  ],
+  "containers": [
+    {
+      "class_name": "DownloaderContainer",
+      "image": "../downloader-container/Dockerfile",
+      "max_instances": 1,
+      "instance_type": "standard-1"
+    },
+    {
+      "class_name": "TranscriptionContainer",
+      "image": "../downloader-container/Dockerfile.transcription",
+      "max_instances": 1,
+      "instance_type": "standard-3",
+      "ssh": { "enabled": false },
+      "authorized_keys": [],
+      "trusted_user_ca_keys": []
+    }
+  ],
+  "workflows": [
+    {
+      "name": "media-job-workflow",
+      "binding": "MEDIA_WORKFLOW",
+      "class_name": "MediaJobWorkflow"
+    },
+    {
+      "name": "integration-media-workflow",
+      "binding": "INTEGRATION_WORKFLOW",
+      "class_name": "IntegrationWorkflow"
+    }
+  ],
+  "services": [
+    {
+      "binding": "PROVENANCE_VERIFIER",
+      "service": "example-lens-verifier",
+      "entrypoint": "IntegrationVerifier"
+    }
+  ],
+  "triggers": {
+    "crons": ["* * * * *", "*/15 * * * *"]
+  }
+}

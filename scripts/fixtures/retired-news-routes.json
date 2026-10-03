@@ -1,0 +1,81 @@
+{
+  "sourcePath": "apps/cloudflare-worker/src/mini-app-router.ts",
+  "routes": [
+    {
+      "path": "/a",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "oldStatus": 200
+    },
+    {
+      "path": "/apps/news",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "oldStatus": 200
+    },
+    {
+      "path": "/apps/news/assets/1e3c3993/news.1e3c3993.css",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "oldStatus": 200
+    },
+    {
+      "path": "/apps/news/assets/40614a25/news.40614a25.js",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "oldStatus": 200
+    },
+    {
+      "path": "/api/apps/news/articles",
+      "methods": [
+        "GET"
+      ],
+      "oldStatus": 401
+    },
+    {
+      "path": "/api/apps/news/sources",
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "oldStatus": 401
+    },
+    {
+      "path": "/api/apps/news/sources/test",
+      "methods": [
+        "POST"
+      ],
+      "oldStatus": 401
+    },
+    {
+      "path": "/api/apps/news/settings",
+      "methods": [
+        "GET",
+        "PUT"
+      ],
+      "oldStatus": 401
+    },
+    {
+      "path": "/api/apps/news/deliveries",
+      "methods": [
+        "GET"
+      ],
+      "oldStatus": 401
+    },
+    {
+      "path": "/api/apps/news/refresh",
+      "methods": [
+        "POST"
+      ],
+      "oldStatus": 401
+    }
+  ]
+}

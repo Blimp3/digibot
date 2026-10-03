@@ -355,6 +355,8 @@ export interface ContainerFailureResult {
   errorCode: string;
   safeMessage: string;
   retryable: boolean;
+  /** Untrusted internal diagnostics are allowlisted at the logging boundary. */
+  diagnostics?: unknown;
   outcome?: DeliveryOutcome;
   /** Preserved only for an explicit, proven Telegram 429 rejection. */
   retryAfterSeconds?: number;
@@ -374,12 +376,4 @@ export interface ContainerDeliveryResult {
   expiresAt?: string;
   /** Echoed by newer Containers; older delivery responses omit it. */
   deadlineAt?: number;
-}
-
-export function isJobState(value: unknown): value is JobState {
-  return typeof value === "string" && (JOB_STATES as readonly string[]).includes(value);
-}
-
-export function isMediaMode(value: unknown): value is MediaMode {
-  return value === "video" || value === "audio";
 }

@@ -1,0 +1,463 @@
+{
+  "version": 1,
+  "policyVersions": {
+    "image": "content-provenance-c2pa-6273cdcb4f27-v2",
+    "audio": "openai-content-provenance-v1"
+  },
+  "pairing": {
+    "pairId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    "confirmationCode": "123456",
+    "expiresAt": "2026-09-16T10:05:00.000Z"
+  },
+  "session": {
+    "tokenType": "Bearer",
+    "accountId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "sessionId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    "accessToken": "fixtureAccessToken_000000000000000000000000",
+    "accessExpiresAt": "2026-09-16T10:15:00.000Z",
+    "refreshToken": "fixtureRefreshToken_00000000000000000000000",
+    "refreshExpiresAt": "2026-09-23T10:00:00.000Z",
+    "absoluteExpiresAt": "2026-10-16T10:00:00.000Z"
+  },
+  "awaitingUpload": {
+    "version": 1,
+    "operationId": "11111111-1111-4111-8111-111111111111",
+    "accountId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "action": "check",
+    "state": "awaiting_upload",
+    "requestedAt": "2026-09-16T10:00:00.000Z",
+    "expiresAt": "2026-09-17T10:00:00.000Z",
+    "mediaSha256": "a4d4c009619311d9b83904acfd62fe3b7f918c312522bbcc6ad51cdec4fd1edf",
+    "segment": null,
+    "archive": {
+      "deliveryState": "pending",
+      "documentReceipt": null,
+      "integrityState": "not_checked",
+      "roundTripSha256": null,
+      "error": null,
+      "retryReady": false
+    },
+    "error": null,
+    "envelope": null
+  },
+  "completedCheck": {
+    "version": 1,
+    "operationId": "11111111-1111-4111-8111-111111111111",
+    "accountId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "action": "check",
+    "state": "completed",
+    "requestedAt": "2026-09-16T10:00:00.000Z",
+    "expiresAt": "2026-09-17T10:00:00.000Z",
+    "mediaSha256": "a4d4c009619311d9b83904acfd62fe3b7f918c312522bbcc6ad51cdec4fd1edf",
+    "segment": null,
+    "archive": {
+      "deliveryState": "confirmed",
+      "documentReceipt": {
+        "botId": "123456",
+        "chatId": "12345",
+        "messageId": "101",
+        "fileId": "saved-file-101"
+      },
+      "integrityState": "verified",
+      "roundTripSha256": "a4d4c009619311d9b83904acfd62fe3b7f918c312522bbcc6ad51cdec4fd1edf",
+      "error": null,
+      "retryReady": false
+    },
+    "error": null,
+    "envelope": {
+      "version": 1,
+      "operationId": "11111111-1111-4111-8111-111111111111",
+      "action": "check",
+      "forceRecheck": false,
+      "media": {
+        "mediaSha256": "a4d4c009619311d9b83904acfd62fe3b7f918c312522bbcc6ad51cdec4fd1edf",
+        "byteLength": 67,
+        "mimeType": "image/png",
+        "inputKind": "original",
+        "audioDurationSeconds": null,
+        "segment": null,
+        "fullSourceSha256": null
+      },
+      "accountId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "requestedAt": "2026-09-16T10:00:00.000Z",
+      "result": {
+        "resultRef": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        "accountId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "mediaSha256": "a4d4c009619311d9b83904acfd62fe3b7f918c312522bbcc6ad51cdec4fd1edf",
+        "verificationPolicyVersion": "content-provenance-c2pa-6273cdcb4f27-v2",
+        "resultSchemaVersion": 2,
+        "originallyCheckedAt": "2026-09-16T10:00:00.000Z",
+        "cacheSource": "fresh",
+        "evidence": {
+          "verdict": "no_supported_openai_signal",
+          "summary": "No supported provenance signal was detected.",
+          "signals": [],
+          "warnings": [],
+          "checkedAt": "2026-09-16T10:00:00.000Z",
+          "requestId": "22222222-2222-4222-8222-222222222222",
+          "contentCredentials": {
+            "status": "not_present",
+            "signatureValid": false,
+            "contentBindingValid": false,
+            "signerTrusted": false,
+            "issuer": null,
+            "actions": [],
+            "aiDeclaration": null,
+            "validationCodes": [],
+            "trustListVersion": "fixture-v1"
+          }
+        }
+      },
+      "archive": {
+        "deliveryState": "confirmed",
+        "documentReceipt": {
+          "botId": "123456",
+          "chatId": "12345",
+          "messageId": "101",
+          "fileId": "saved-file-101"
+        },
+        "integrityState": "verified",
+        "roundTripSha256": "a4d4c009619311d9b83904acfd62fe3b7f918c312522bbcc6ad51cdec4fd1edf",
+        "error": null,
+        "retryReady": false
+      },
+      "historySync": {
+        "state": "synced",
+        "historyId": "11111111-1111-4111-8111-111111111111",
+        "error": null
+      }
+    }
+  },
+  "completedDownload": {
+    "version": 1,
+    "operationId": "44444444-4444-4444-8444-444444444444",
+    "accountId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "action": "download",
+    "state": "completed",
+    "requestedAt": "2026-09-16T10:00:00.000Z",
+    "expiresAt": "2026-09-17T10:00:00.000Z",
+    "mediaSha256": "a4d4c009619311d9b83904acfd62fe3b7f918c312522bbcc6ad51cdec4fd1edf",
+    "segment": null,
+    "archive": {
+      "deliveryState": "confirmed",
+      "documentReceipt": {
+        "botId": "123456",
+        "chatId": "12345",
+        "messageId": "102",
+        "fileId": "saved-file-102"
+      },
+      "integrityState": "verified",
+      "roundTripSha256": "a4d4c009619311d9b83904acfd62fe3b7f918c312522bbcc6ad51cdec4fd1edf",
+      "error": null,
+      "retryReady": false
+    },
+    "error": null,
+    "envelope": {
+      "version": 1,
+      "operationId": "44444444-4444-4444-8444-444444444444",
+      "action": "download",
+      "forceRecheck": false,
+      "media": {
+        "mediaSha256": "a4d4c009619311d9b83904acfd62fe3b7f918c312522bbcc6ad51cdec4fd1edf",
+        "byteLength": 67,
+        "mimeType": "image/png",
+        "inputKind": "original",
+        "audioDurationSeconds": null,
+        "segment": null,
+        "fullSourceSha256": null
+      },
+      "accountId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "requestedAt": "2026-09-16T10:00:00.000Z",
+      "result": null,
+      "archive": {
+        "deliveryState": "confirmed",
+        "documentReceipt": {
+          "botId": "123456",
+          "chatId": "12345",
+          "messageId": "102",
+          "fileId": "saved-file-102"
+        },
+        "integrityState": "verified",
+        "roundTripSha256": "a4d4c009619311d9b83904acfd62fe3b7f918c312522bbcc6ad51cdec4fd1edf",
+        "error": null,
+        "retryReady": false
+      },
+      "historySync": {
+        "state": "synced",
+        "historyId": "44444444-4444-4444-8444-444444444444",
+        "error": null
+      }
+    }
+  },
+  "failed": {
+    "version": 1,
+    "operationId": "55555555-5555-4555-8555-555555555555",
+    "accountId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "action": "download",
+    "state": "failed",
+    "requestedAt": "2026-09-16T10:00:00.000Z",
+    "expiresAt": "2026-09-17T10:00:00.000Z",
+    "mediaSha256": "a4d4c009619311d9b83904acfd62fe3b7f918c312522bbcc6ad51cdec4fd1edf",
+    "segment": null,
+    "archive": {
+      "deliveryState": "failed",
+      "documentReceipt": null,
+      "integrityState": "not_checked",
+      "roundTripSha256": null,
+      "error": {
+        "code": "archive_failed",
+        "message": "Telegram did not accept the file. A controlled retry is available while the input is retained.",
+        "retryable": true
+      },
+      "retryReady": true
+    },
+    "error": {
+      "code": "archive_failed",
+      "message": "The download has no confirmed Telegram delivery. See its archive status before retrying.",
+      "retryable": true
+    },
+    "envelope": {
+      "version": 1,
+      "operationId": "55555555-5555-4555-8555-555555555555",
+      "action": "download",
+      "forceRecheck": false,
+      "media": {
+        "mediaSha256": "a4d4c009619311d9b83904acfd62fe3b7f918c312522bbcc6ad51cdec4fd1edf",
+        "byteLength": 67,
+        "mimeType": "image/png",
+        "inputKind": "original",
+        "audioDurationSeconds": null,
+        "segment": null,
+        "fullSourceSha256": null
+      },
+      "accountId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "requestedAt": "2026-09-16T10:00:00.000Z",
+      "result": null,
+      "archive": {
+        "deliveryState": "failed",
+        "documentReceipt": null,
+        "integrityState": "not_checked",
+        "roundTripSha256": null,
+        "error": {
+          "code": "archive_failed",
+          "message": "Telegram did not accept the file. A controlled retry is available while the input is retained.",
+          "retryable": true
+        },
+        "retryReady": true
+      },
+      "historySync": {
+        "state": "synced",
+        "historyId": "55555555-5555-4555-8555-555555555555",
+        "error": null
+      }
+    }
+  },
+  "history": {
+    "operations": [
+      {
+        "version": 1,
+        "operationId": "11111111-1111-4111-8111-111111111111",
+        "accountId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "action": "check",
+        "state": "completed",
+        "requestedAt": "2026-09-16T10:00:00.000Z",
+        "expiresAt": "2026-09-17T10:00:00.000Z",
+        "mediaSha256": "a4d4c009619311d9b83904acfd62fe3b7f918c312522bbcc6ad51cdec4fd1edf",
+        "segment": null,
+        "archive": {
+          "deliveryState": "confirmed",
+          "documentReceipt": {
+            "botId": "123456",
+            "chatId": "12345",
+            "messageId": "101",
+            "fileId": "saved-file-101"
+          },
+          "integrityState": "verified",
+          "roundTripSha256": "a4d4c009619311d9b83904acfd62fe3b7f918c312522bbcc6ad51cdec4fd1edf",
+          "error": null,
+          "retryReady": false
+        },
+        "error": null,
+        "envelope": {
+          "version": 1,
+          "operationId": "11111111-1111-4111-8111-111111111111",
+          "action": "check",
+          "forceRecheck": false,
+          "media": {
+            "mediaSha256": "a4d4c009619311d9b83904acfd62fe3b7f918c312522bbcc6ad51cdec4fd1edf",
+            "byteLength": 67,
+            "mimeType": "image/png",
+            "inputKind": "original",
+            "audioDurationSeconds": null,
+            "segment": null,
+            "fullSourceSha256": null
+          },
+          "accountId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "requestedAt": "2026-09-16T10:00:00.000Z",
+          "result": {
+            "resultRef": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+            "accountId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "mediaSha256": "a4d4c009619311d9b83904acfd62fe3b7f918c312522bbcc6ad51cdec4fd1edf",
+            "verificationPolicyVersion": "content-provenance-c2pa-6273cdcb4f27-v2",
+            "resultSchemaVersion": 2,
+            "originallyCheckedAt": "2026-09-16T10:00:00.000Z",
+            "cacheSource": "fresh",
+            "evidence": {
+              "verdict": "no_supported_openai_signal",
+              "summary": "No supported provenance signal was detected.",
+              "signals": [],
+              "warnings": [],
+              "checkedAt": "2026-09-16T10:00:00.000Z",
+              "requestId": "22222222-2222-4222-8222-222222222222",
+              "contentCredentials": {
+                "status": "not_present",
+                "signatureValid": false,
+                "contentBindingValid": false,
+                "signerTrusted": false,
+                "issuer": null,
+                "actions": [],
+                "aiDeclaration": null,
+                "validationCodes": [],
+                "trustListVersion": "fixture-v1"
+              }
+            }
+          },
+          "archive": {
+            "deliveryState": "confirmed",
+            "documentReceipt": {
+              "botId": "123456",
+              "chatId": "12345",
+              "messageId": "101",
+              "fileId": "saved-file-101"
+            },
+            "integrityState": "verified",
+            "roundTripSha256": "a4d4c009619311d9b83904acfd62fe3b7f918c312522bbcc6ad51cdec4fd1edf",
+            "error": null,
+            "retryReady": false
+          },
+          "historySync": {
+            "state": "synced",
+            "historyId": "11111111-1111-4111-8111-111111111111",
+            "error": null
+          }
+        }
+      }
+    ],
+    "nextCursor": null
+  },
+  "stats": {
+    "period": "7d",
+    "since": "2026-09-09T10:00:00.000Z",
+    "asOf": "2026-09-16T10:00:00.000Z",
+    "checksRequested": 1,
+    "checksCompleted": 1,
+    "checksFailed": 0,
+    "freshChecks": 1,
+    "cachedChecks": 0,
+    "downloadsRequested": 2,
+    "downloadsConfirmed": 1,
+    "downloadsFailed": 1,
+    "uniqueMedia": 1,
+    "savedOriginals": 1,
+    "unresolvedArchives": 0,
+    "legacyDownloads": 0
+  },
+  "deleteOk": {
+    "ok": true
+  },
+  "linkDownload": {
+    "request": {
+      "method": "POST",
+      "path": "/api/integration/link-downloads",
+      "body": {
+        "operationId": "66666666-6666-4666-8666-666666666666",
+        "output": "mp3",
+        "sourceUrl": "https://youtu.be/fixture-video"
+      }
+    },
+    "status": 202,
+    "response": {
+      "jobId": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      "state": "queued"
+    }
+  },
+  "verifierRequests": {
+    "validate": {
+      "method": "POST",
+      "path": "/validate",
+      "headers": {
+        "content-type": "multipart/form-data; boundary=<boundary>",
+        "x-integration-account-id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "x-integration-media-kind": "image"
+      },
+      "parts": [
+        [
+          "file",
+          {
+            "filename": "image",
+            "type": "image/png",
+            "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR42mNgAAAAAgAB5Sfe/AAAAABJRU5ErkJggg=="
+          }
+        ],
+        [
+          "imageSha256",
+          "a4d4c009619311d9b83904acfd62fe3b7f918c312522bbcc6ad51cdec4fd1edf"
+        ],
+        [
+          "byteLength",
+          "67"
+        ],
+        [
+          "validatedMimeType",
+          "image/png"
+        ],
+        [
+          "verificationPolicyVersion",
+          "content-provenance-c2pa-6273cdcb4f27-v2"
+        ],
+        [
+          "forceRecheck",
+          "false"
+        ]
+      ]
+    },
+    "verifyImage": {
+      "method": "POST",
+      "path": "/verify-image",
+      "headers": {
+        "content-type": "multipart/form-data; boundary=<boundary>",
+        "x-integration-account-id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      },
+      "parts": [
+        [
+          "file",
+          {
+            "filename": "image",
+            "type": "image/png",
+            "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR42mNgAAAAAgAB5Sfe/AAAAABJRU5ErkJggg=="
+          }
+        ],
+        [
+          "imageSha256",
+          "a4d4c009619311d9b83904acfd62fe3b7f918c312522bbcc6ad51cdec4fd1edf"
+        ],
+        [
+          "byteLength",
+          "67"
+        ],
+        [
+          "validatedMimeType",
+          "image/png"
+        ],
+        [
+          "verificationPolicyVersion",
+          "content-provenance-c2pa-6273cdcb4f27-v2"
+        ],
+        [
+          "forceRecheck",
+          "false"
+        ]
+      ]
+    }
+  }
+}

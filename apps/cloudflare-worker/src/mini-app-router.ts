@@ -8,7 +8,7 @@ export const DOWNLOADER_MINI_APP_ID = "downloader" as const;
 export const DOWNLOADER_MINI_APP_PATH = "/apps/downloader" as const;
 /** SHA-256 prefixes; update each token whenever its static asset changes. */
 export const DOWNLOADER_MINI_APP_CSS_VERSION = "0e93d961" as const;
-export const DOWNLOADER_MINI_APP_JS_VERSION = "a30c40fd" as const;
+export const DOWNLOADER_MINI_APP_JS_VERSION = "910bc897" as const;
 export const DOWNLOADER_MINI_APP_CSS_PATH = `${DOWNLOADER_MINI_APP_PATH}/assets/${DOWNLOADER_MINI_APP_CSS_VERSION}/mini-app.${DOWNLOADER_MINI_APP_CSS_VERSION}.css` as const;
 export const DOWNLOADER_MINI_APP_JS_PATH = `${DOWNLOADER_MINI_APP_PATH}/assets/${DOWNLOADER_MINI_APP_JS_VERSION}/mini-app.${DOWNLOADER_MINI_APP_JS_VERSION}.js` as const;
 export const DOWNLOADER_MINI_APP_API_PATH = "/api/apps/downloader" as const;

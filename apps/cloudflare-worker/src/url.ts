@@ -41,24 +41,19 @@ function isPrivateIpv4(hostname: string): boolean {
 function isPrivateIpv6(hostname: string): boolean {
   const value = hostname.replace(/^\[|\]$/gu, "").toLowerCase();
   if (!value.includes(":")) return false;
-  if (value.startsWith("::ffff:")) {
-    const mapped = value.slice("::ffff:".length);
-    if (mapped.includes(".")) return isPrivateIpv4(mapped);
-  }
+  // URL.hostname serializes IPv6 compressed and in hex (::ffff:7f00:1), so
+  // block whole prefixes that embed or reach IPv4 rather than re-deriving the
+  // IPv4 ranges. Every address in ::/96 (unspecified, loopback, IPv4-compatible)
+  // and ::ffff:0:0/96 (IPv4-mapped) serializes with a leading "::"; anything
+  // else with one is in ::/32, unallocated space inside the IETF-reserved ::/8.
   return (
-    value === "::" ||
-    value === "::1" ||
+    value.startsWith("::") ||
+    value.startsWith("64:ff9b:") || // 64:ff9b::/32: NAT64 64:ff9b::/96 and local-use 64:ff9b:1::/48
+    value.startsWith("2002:") || // 6to4
     value.startsWith("fc") ||
     value.startsWith("fd") ||
-    value.startsWith("fe8") ||
-    value.startsWith("fe9") ||
-    value.startsWith("fea") ||
-    value.startsWith("feb") ||
-    value.startsWith("ff") ||
-    value.startsWith("::ffff:10.") ||
-    value.startsWith("::ffff:127.") ||
-    value.startsWith("::ffff:192.168.") ||
-    value.startsWith("::ffff:172.16.")
+    /^fe[89a-f]/u.test(value) || // link-local fe80::/10 and site-local fec0::/10
+    value.startsWith("ff")
   );
 }
 
@@ -111,8 +106,4 @@ export function extractSingleUrl(text: string): string | null {
   const matches = text.match(/https?:\/\/[^\s<>]+/giu) ?? [];
   if (matches.length !== 1) return null;
   return matches[0]?.replace(/[),.;!?]+$/u, "") ?? null;
-}
-
-export function validateRedirectTarget(input: string, config: Pick<WorkerConfig, "allowedSourceHosts" | "maxUrlLength">): ValidatedSourceUrl {
-  return validateSourceUrl(input, config);
 }

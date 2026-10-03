@@ -4,15 +4,6 @@ set -euo pipefail
 root_dir="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root_dir"
 
-scan_args=(
-  --hidden
-  --glob '!.git/**'
-  --glob '!node_modules/**'
-  --glob '!pnpm-lock.yaml'
-  --glob '!uv.lock'
-  --glob '!scripts/scan-secrets.sh'
-)
-
 patterns=(
   '-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----'
   '[0-9]{6,12}:[A-Za-z0-9_-]{30,}'
@@ -22,15 +13,29 @@ patterns=(
   'AKIA[0-9A-Z]{16}'
 )
 
-found=0
+pattern_args=()
 for pattern in "${patterns[@]}"; do
-  if rg --files-with-matches --color never "${scan_args[@]}" -- "$pattern" .; then
-    found=1
-  fi
+  pattern_args+=(-e "$pattern")
 done
 
-if [[ "$found" -ne 0 ]]; then
+# Tracked plus untracked files, .gitignore respected. No -I: a path marked
+# binary in .gitattributes would otherwise be skipped silently, whereas a
+# "Binary file ... matches" line still exits 0. git grep exits 0 on a match
+# and 1 on none; anything on stderr (an unreadable file, no repository) means
+# a file was not scanned, so that fails too even when the status is 1.
+errors="$(mktemp)"
+trap 'rm -f "$errors"' EXIT
+status=0
+git grep -nE --untracked "${pattern_args[@]}" -- . \
+  ':!pnpm-lock.yaml' ':!apps/downloader-container/uv.lock' ':!scripts/scan-secrets.sh' 2>"$errors" || status=$?
+
+if [[ -s "$errors" || "$status" -gt 1 ]]; then
+  cat "$errors" >&2
+  printf 'Secret scan could not run: git grep exited with status %s.\n' "$status" >&2
+  exit 2
+fi
+if [[ "$status" -eq 0 ]]; then
   printf 'Potential secret material found. Remove or replace it before committing.\n' >&2
   exit 1
 fi
-printf 'No high-confidence secret patterns found in tracked-source candidates.\n'
+printf 'No high-confidence secret patterns found in tracked and untracked files.\n'

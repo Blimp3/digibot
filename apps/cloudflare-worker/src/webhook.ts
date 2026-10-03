@@ -281,7 +281,7 @@ function jsonResponse(body: Record<string, unknown>, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
 }
 
-function helpText(): string {
+function helpText(connectedMedia = false): string {
   return `👋 DigiBot quick guide
 
 Send a public media link to download a video.
@@ -316,15 +316,13 @@ Reply to a DigiBot .md transcript with /search climate change to find passages a
 
 Send or forward one audio/video file or voice message up to 20 MB, then reply with /audio [m4a|mp3] [timing] or /video [timing] to start. Video asks for quality.
 
-📋 Jobs and sources
+${connectedMedia ? "🖼️ Provenance\n\nSend a PNG, JPEG or WebP (4 MiB max, no HEIC) and tap Check this image, or reply /check. Send photos as a File: Telegram strips Content Credentials.\n\n" : ""}📋 Jobs and sources
 
 /queue — your waiting and running requests.
 /status — your latest request.
 /stats [24h|7d|30d|all] — your request stats.
 /activity — your five latest requests.
-/sources — supported sites and limits.
-
-📖 This source edition is a synthetic Worker demo. See the repository README.`;
+/sources — supported sites and limits.`;
 }
 
 function queueJobStatus(job: Awaited<ReturnType<typeof getUserQueue>>[number]): string {
@@ -372,7 +370,7 @@ export async function handleTelegramWebhook(
   try { existing = await getProcessedUpdate(db, updateId); }
   catch { return jsonResponse({ ok: false, error: "INTERNAL_ERROR" }, 500); }
   if (existing) {
-    logStructured("telegram_update_duplicate", { updateId });
+    logStructured("telegram_update_duplicate");
     return jsonResponse({ ok: true, duplicate: true });
   }
 
@@ -405,7 +403,7 @@ export async function handleTelegramWebhook(
     return acknowledgeNotice(TELEGRAM_FILE_INSTRUCTIONS);
   }
   if (parsedCommand.kind === "error") return acknowledgeNotice(parsedCommand.message, parsedCommand.code);
-  if (!command) return acknowledgeNotice(helpText(), "UNSUPPORTED_MEDIA");
+  if (!command) return acknowledgeNotice(helpText(env.INTEGRATION_ENABLED === "true"), "UNSUPPORTED_MEDIA");
 
   if (command.kind === "youtube_collection") {
     try {
@@ -424,7 +422,7 @@ export async function handleTelegramWebhook(
       if (reservation === "duplicate") return jsonResponse({ ok: true, duplicate: true });
       if (reservation === "limited") return acknowledgeNotice("Wait 30 seconds between YouTube collection lookups. The hourly lookup limit also applies.", "SOURCE_RATE_LIMITED");
     } catch { return jsonResponse({ ok: false, error: "INTERNAL_ERROR" }, 500); }
-    // ponytail: lookup is one-shot within 20s, not a durable crawler. Check /queue
+    // Known limit: lookup is one-shot within 20s, not a durable crawler. Check /queue
     // and repeat explicitly after interruption; admitted item jobs are durable.
     const work = runYouTubeCollection(env, command, updateId, allowed.userId, allowed.chatId, String(message.message_id))
       .catch(() => logStructured("telegram_notice_dispatch_deferred", { state: "pending" }));
@@ -448,7 +446,7 @@ export async function handleTelegramWebhook(
     if (admission === "limited") {
       return acknowledgeNotice("Wait 30 seconds between searches. The hourly search limit also applies; try again later.", "SOURCE_RATE_LIMITED");
     }
-    // ponytail: an admitted search is one-shot and held only in memory; users
+    // Known limit: an admitted search is one-shot and held only in memory; users
     // repeat explicitly after interruption rather than persisting private text.
     const search = (async (): Promise<void> => {
       const client = new TelegramClient({ token: env.TELEGRAM_BOT_TOKEN, requestTimeoutMs: 7_000 });
@@ -460,9 +458,9 @@ export async function handleTelegramWebhook(
       // Once sending starts, an uncertain result must never trigger a fallback.
       try {
         await client.sendMessage(allowed.chatId, text);
-        logStructured("transcript_search_delivered", { updateId, state: "confirmed" });
+        logStructured("transcript_search_delivered", { state: "confirmed" });
       } catch {
-        logStructured("transcript_search_delivery_unconfirmed", { updateId, state: "unknown" });
+        logStructured("transcript_search_delivery_unconfirmed", { state: "unknown" });
       }
     })();
     if (waitUntil) waitUntil(search);
@@ -500,7 +498,7 @@ export async function handleTelegramWebhook(
       else if (command.kind === "sources") text = formatSourceCatalog();
       else if (command.kind === "stats") text = formatUserActivityStats(await getUserActivityStats(db, allowed.userId, { period: command.period }));
       else if (command.kind === "activity") text = formatLatestUserActivity(await getLatestUserActivity(db, allowed.userId));
-      else text = helpText();
+      else text = helpText(env.INTEGRATION_ENABLED === "true");
     } catch { return jsonResponse({ ok: false, error: "INTERNAL_ERROR" }, 500); }
     return acknowledgeNotice(text);
   }
@@ -620,7 +618,6 @@ export async function handleTelegramWebhook(
   else await dispatch;
   logStructured("telegram_job_accepted", {
     jobId,
-    updateId,
     sourceHost: source.sourceHost,
     sourceUrlHash: sourceHash,
     state: "queued",
@@ -746,14 +743,6 @@ async function handleQualityCallback(
       return reply("This choice is unavailable. Send /video again.", { accepted: false });
     }
     return jsonResponse({ ok: false, error: "INTERNAL_ERROR" }, 500);
-  }
-}
-
-export function sourceHostFromJobUrl(url: string): string {
-  try {
-    return new URL(url).hostname.toLowerCase();
-  } catch {
-    return "unknown";
   }
 }
 

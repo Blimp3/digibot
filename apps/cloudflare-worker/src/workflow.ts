@@ -8,9 +8,9 @@ import {
   confirmedDeliveryMessageIds,
   telegramMessageIds,
   markConfirmedDeliveryConflict,
-  getDispatchIntent,
   getJob,
   getJobDelivery,
+  getJobDurableState,
   getLatestCompletedJobForMedia,
   markDeliveryUnknown,
   positiveTelegramMessageId,
@@ -330,7 +330,8 @@ export class MediaJobWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
     if (typeof jobId !== "string" || !JOB_ID_PATTERN.test(jobId)) return { status: "failed", errorCode: "INTERNAL_ERROR" };
     const started = Date.now();
 
-    const loadedJob = await steps.do("load job", async () => getJob(this.env.DB, jobId));
+    const durableState = await steps.do("load job state", async () => getJobDurableState(this.env.DB, jobId));
+    const loadedJob = durableState.job;
     if (!loadedJob) return { status: "missing", jobId };
     let job = loadedJob;
     const clipCount = clipCountForJob(job);
@@ -339,7 +340,7 @@ export class MediaJobWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
     const workerConfig = getWorkerConfig(this.env);
     const timeoutSeconds = workflowTimeoutSeconds(job.transcript_method === "captions" ? "download" : operation, workerConfig);
     if (job.status === "completed") {
-      const receipt = await steps.do("load completed delivery", async () => getJobDelivery(this.env.DB, jobId));
+      const receipt = durableState.delivery;
       const delivery = receipt ? deliveryFromRecord(receipt, job) : null;
       if (clipCount > 0) {
         if (delivery) return deliveryOutput(delivery, null, jobId);
@@ -355,8 +356,8 @@ export class MediaJobWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
     }
     if (job.status === "failed") return { status: "failed", jobId, errorCode: job.error_code ?? "INTERNAL_ERROR" };
 
-    const dispatchIntent = await steps.do("load dispatch intent", async () => getDispatchIntent(this.env.DB, jobId));
-    const deliveryRecord = await steps.do("load delivery state", async () => getJobDelivery(this.env.DB, jobId));
+    const dispatchIntent = durableState.intent;
+    const deliveryRecord = durableState.delivery;
     const generation = dispatchIntent?.generation ?? 0;
     if (!dispatchIntent || !deliveryRecord) {
       // The additive migration should make both rows available. A job without
@@ -424,7 +425,12 @@ export class MediaJobWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
           waitingNotice = await steps.do(
             "ensure waiting message",
             { retries: { limit: 0, delay: "1 second", backoff: "linear" } },
-            async () => ensureWaitingNotice(this.env, job.telegram_update_id, job.telegram_chat_id, waitingText),
+            async () => {
+              const warm = this.warmContainer(job);
+              const notice = await ensureWaitingNotice(this.env, job.telegram_update_id, job.telegram_chat_id, waitingText);
+              await warm;
+              return notice;
+            },
           );
         } catch {
           return { status: "unknown", jobId, reason: "waiting_notice_unavailable" };
@@ -520,18 +526,7 @@ export class MediaJobWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
               // Workflow histories may retain the retired separate claim step,
               // but a replay must never trust its cached Boolean result.
               const mayCopy = await claimDeliverySending(this.env.DB, jobId, generation);
-              if (!mayCopy) {
-                const currentDelivery = await getJobDelivery(this.env.DB, jobId);
-                const alreadyConfirmed = currentDelivery ? deliveryFromRecord(currentDelivery, job) : null;
-                if (alreadyConfirmed) return { status: "completed" as const, delivery: alreadyConfirmed };
-                if (currentDelivery?.state === "unknown") {
-                  return { status: "unknown" as const, reason: currentDelivery.unknown_reason ?? "delivery_unknown" };
-                }
-                if (currentDelivery?.state === "rejected") {
-                  return { status: "rejected" as const, errorCode: "TELEGRAM_UPLOAD_FAILED" as const };
-                }
-                return { status: "unknown" as const, reason: "delivery_claim_unavailable" };
-              }
+              if (!mayCopy) return await this.refusedClaimOutcome(job);
               return { status: "completed" as const, delivery: await this.copyReusableMedia(job, reusableJob, generation) };
             } catch (error) {
               // Keep the ambiguity marker serializable across Workflow
@@ -627,7 +622,6 @@ export class MediaJobWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
           }
           logStructured("media_job_delivery_unknown", {
             jobId,
-            updateId: job.telegram_update_id,
             sourceHost: job.source_host,
             sourceUrlHash: job.source_url_hash,
             state: "unknown",
@@ -661,18 +655,7 @@ export class MediaJobWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
                 // Keep ownership acquisition in this callback so restarting
                 // this step cannot reuse an earlier cached claim to send again.
                 const mayDeliver = await claimDeliverySending(this.env.DB, jobId, generation);
-                if (!mayDeliver) {
-                  const currentDelivery = await getJobDelivery(this.env.DB, jobId);
-                  const alreadyConfirmed = currentDelivery ? deliveryFromRecord(currentDelivery, job) : null;
-                  if (alreadyConfirmed) return { status: "completed" as const, delivery: alreadyConfirmed };
-                  if (currentDelivery?.state === "unknown") {
-                    return { status: "unknown" as const, reason: currentDelivery.unknown_reason ?? "delivery_unknown" };
-                  }
-                  if (currentDelivery?.state === "rejected") {
-                    return { status: "rejected" as const, errorCode: "TELEGRAM_UPLOAD_FAILED" as const };
-                  }
-                  return { status: "unknown" as const, reason: "delivery_claim_unavailable" };
-                }
+                if (!mayDeliver) return await this.refusedClaimOutcome(job);
                 return { status: "completed" as const, delivery: await this.deliverPrepared(job, prepared, deadlineAt) };
               } catch (error) {
                 // Return explicit serializable outcome data from the step.
@@ -756,7 +739,6 @@ export class MediaJobWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
       );
       logStructured("media_job_completed", {
         jobId,
-        updateId: job.telegram_update_id,
         sourceHost: job.source_host,
         sourceUrlHash: job.source_url_hash,
         state: "completed",
@@ -774,7 +756,6 @@ export class MediaJobWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
         }
         logStructured("media_job_delivery_unknown", {
           jobId,
-          updateId: job.telegram_update_id,
           sourceHost: job.source_host,
           sourceUrlHash: job.source_url_hash,
           state: "unknown",
@@ -818,7 +799,6 @@ export class MediaJobWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
         }
         logStructured("media_job_delivery_unknown", {
           jobId,
-          updateId: job.telegram_update_id,
           sourceHost: job.source_host,
           sourceUrlHash: job.source_url_hash,
           state: "unknown",
@@ -835,7 +815,6 @@ export class MediaJobWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
         // second time. The Workflow checkpoint can be reconciled separately.
         logStructured("media_job_delivery_confirmed", {
           jobId,
-          updateId: job.telegram_update_id,
           sourceHost: job.source_host,
           sourceUrlHash: job.source_url_hash,
           state: "delivered",
@@ -854,7 +833,6 @@ export class MediaJobWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
       }
       logStructured("media_job_failed", {
         jobId,
-        updateId: job.telegram_update_id,
         sourceHost: job.source_host,
         sourceUrlHash: job.source_url_hash,
         state: "failed",
@@ -922,6 +900,20 @@ export class MediaJobWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
     }
   }
 
+  /** Another attempt owns the send: report what it recorded and never send again. */
+  private async refusedClaimOutcome(job: JobRecord): Promise<
+    | { status: "completed"; delivery: ContainerDeliveryResult }
+    | { status: "unknown"; reason: string }
+    | { status: "rejected"; errorCode: "TELEGRAM_UPLOAD_FAILED"; retryAfterSeconds?: undefined }
+  > {
+    const currentDelivery = await getJobDelivery(this.env.DB, job.id);
+    const alreadyConfirmed = currentDelivery ? deliveryFromRecord(currentDelivery, job) : null;
+    if (alreadyConfirmed) return { status: "completed", delivery: alreadyConfirmed };
+    if (currentDelivery?.state === "unknown") return { status: "unknown", reason: currentDelivery.unknown_reason ?? "delivery_unknown" };
+    if (currentDelivery?.state === "rejected") return { status: "rejected", errorCode: "TELEGRAM_UPLOAD_FAILED" };
+    return { status: "unknown", reason: "delivery_claim_unavailable" };
+  }
+
   private async recordPreparedResult(jobId: string, preparedResult: ContainerSuccessResult): Promise<void> {
     await setJobState(this.env.DB, jobId, "processing", {
       output_filename: sanitizeFilename(preparedResult.filename),
@@ -972,6 +964,28 @@ export class MediaJobWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
     });
   }
 
+  private containerForJob(job: JobRecord) {
+    return job.requested_operation === "transcript" && job.transcript_method !== "captions"
+      ? this.env.TRANSCRIPTION_CONTAINER
+      : this.env.DOWNLOADER_CONTAINER;
+  }
+
+  private warmContainer(job: JobRecord): Promise<void> {
+    const container = this.containerForJob(job);
+    if (!container) return Promise.resolve();
+    return (async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const stub = getContainer(container as never, "personal");
+        await Promise.race([
+          stub.fetch(new Request("https://downloader.internal/health", { method: "GET" })),
+          new Promise((resolve) => { timer = setTimeout(resolve, 250); }),
+        ]);
+      } catch { /* Warm-up is best effort and must never affect the job. */ }
+      finally { clearTimeout(timer); }
+    })();
+  }
+
   private async prepareMedia(job: JobRecord, deadlineAt: number): Promise<ContainerJobResult> {
     await setJobState(this.env.DB, job.id, "probing");
     const encrypted = job.source_url_encrypted;
@@ -981,9 +995,7 @@ export class MediaJobWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
     await setJobState(this.env.DB, job.id, "downloading");
     const config = getWorkerConfig(this.env);
     const request: ContainerJobRequest = buildPrepareRequest(job, decryptedSource, config, deadlineAt);
-    const container = job.requested_operation === "transcript" && job.transcript_method !== "captions"
-      ? this.env.TRANSCRIPTION_CONTAINER
-      : this.env.DOWNLOADER_CONTAINER;
+    const container = this.containerForJob(job);
     if (!container) throw new ApplicationError("INTERNAL_ERROR", { retryable: true });
     const stub = getContainer(container as never, "personal");
     let response: Response;
@@ -1022,6 +1034,14 @@ export class MediaJobWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
       throw new UnknownDeliveryError("container_prepare_result_unknown", error);
     }
     if (parsed.status === "failure" || parsed.status === "failed") {
+      logStructured("media_container_prepare_failed", {
+        jobId: job.id,
+        sourceHost: job.source_host,
+        state: "downloading",
+        errorCode: parsed.errorCode,
+        errorStage: "container_prepare",
+        containerDiagnostics: (result as ContainerFailureResult).diagnostics,
+      });
       if (parsed.retryable) throw retryableContainerError(errorCodeFromContainerResult(parsed.errorCode));
       return parsed;
     }
@@ -1034,9 +1054,7 @@ export class MediaJobWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
 
   private async deliverPrepared(job: JobRecord, prepared: ContainerSuccessResult, deadlineAt: number): Promise<ContainerDeliveryResult> {
     await setJobState(this.env.DB, job.id, "uploading");
-    const container = job.requested_operation === "transcript" && job.transcript_method !== "captions"
-      ? this.env.TRANSCRIPTION_CONTAINER
-      : this.env.DOWNLOADER_CONTAINER;
+    const container = this.containerForJob(job);
     if (!container) throw new ApplicationError("TELEGRAM_UPLOAD_FAILED");
     const request: ContainerDeliveryRequest = buildDeliveryRequest(job, prepared, deadlineAt);
     const stub = getContainer(container as never, "personal");

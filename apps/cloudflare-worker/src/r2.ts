@@ -1,5 +1,4 @@
 import { clearExpiredJobR2ObjectKey, deleteExpiredJobs, deleteOldProcessedUpdates } from "./db";
-import { ApplicationError } from "./errors";
 import { safeContentDisposition, sanitizeFilename, verifyDownloadToken } from "./security";
 import type { Env } from "./types";
 
@@ -73,14 +72,6 @@ export async function cleanupExpiredR2Jobs(env: Env, now = new Date()): Promise<
   }
   await deleteOldProcessedUpdates(env.DB, new Date(now.getTime() - 7 * 86400 * 1000).toISOString());
   return deleted;
-}
-
-export function buildDownloadUrl(baseUrl: string, token: string): string {
-  if (!baseUrl) throw new ApplicationError("R2_UPLOAD_FAILED");
-  const base = new URL(baseUrl);
-  if (base.protocol !== "https:" || base.username || base.password || base.search || base.hash) throw new ApplicationError("R2_UPLOAD_FAILED");
-  base.pathname = `${base.pathname.replace(/\/$/u, "")}/download/${encodeURIComponent(token)}`;
-  return base.toString();
 }
 
 export function r2RetentionExpiry(now: Date, retentionSeconds: number): string {

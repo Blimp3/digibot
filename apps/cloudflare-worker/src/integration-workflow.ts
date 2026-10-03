@@ -75,7 +75,7 @@ export async function cleanupIntegrationMedia(env: IntegrationEnv): Promise<void
   }
   // Also reap abandoned uploads that never reached D1 admission. No signed
   // object URL is exposed; the prefix is private to this application.
-  // ponytail: scan this small invited-user namespace; use an R2 lifecycle rule
+  // Known limit: scan this small invited-user namespace; use an R2 lifecycle rule
   // if its object count makes a full scheduled scan expensive.
   let cursor: string | undefined;
   do {

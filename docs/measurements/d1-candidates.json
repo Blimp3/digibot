@@ -1,0 +1,193 @@
+{
+  "sourceCommit": "f54c97d1b99594371807b72cd347fab3e5f00d36",
+  "sourceDirty": true,
+  "location": "local Mac, Miniflare/workerd D1, no network providers",
+  "rows": 10000,
+  "before": {
+    "history": {
+      "samples": 100,
+      "p50Ms": 9.626499999983935,
+      "p95Ms": 12.20350000000326,
+      "p99Ms": 16.166250000009313,
+      "failureRate": 0,
+      "rowsRead": 51,
+      "rowsWritten": 0,
+      "queryPlan": [
+        {
+          "id": 7,
+          "parent": 0,
+          "notused": 61,
+          "detail": "SEARCH jobs USING INDEX idx_jobs_user_created (telegram_user_id=?)"
+        },
+        {
+          "id": 41,
+          "parent": 0,
+          "notused": 0,
+          "detail": "USE TEMP B-TREE FOR LAST TERM OF ORDER BY"
+        }
+      ]
+    },
+    "cache": {
+      "samples": 100,
+      "p50Ms": 11.640207999997074,
+      "p95Ms": 15.251875000016298,
+      "p99Ms": 22.669874999992317,
+      "failureRate": 0,
+      "rowsRead": 12500,
+      "rowsWritten": 0,
+      "queryPlan": [
+        {
+          "id": 5,
+          "parent": 0,
+          "notused": 61,
+          "detail": "SEARCH jobs USING INDEX idx_jobs_source_hash (source_url_hash=?)"
+        },
+        {
+          "id": 84,
+          "parent": 0,
+          "notused": 0,
+          "detail": "USE TEMP B-TREE FOR ORDER BY"
+        }
+      ]
+    },
+    "stats": {
+      "samples": 100,
+      "p50Ms": 11.089458000002196,
+      "p95Ms": 12.709292000014102,
+      "p99Ms": 14.659125000005588,
+      "failureRate": 0,
+      "rowsRead": 12500,
+      "rowsWritten": 0,
+      "queryPlan": [
+        {
+          "id": 7,
+          "parent": 0,
+          "notused": 61,
+          "detail": "SEARCH jobs USING INDEX idx_jobs_status_created (status=?)"
+        },
+        {
+          "id": 16,
+          "parent": 0,
+          "notused": 0,
+          "detail": "USE TEMP B-TREE FOR GROUP BY"
+        }
+      ]
+    },
+    "recovery": {
+      "samples": 100,
+      "p50Ms": 10.116333000012673,
+      "p95Ms": 12.50829200001317,
+      "p99Ms": 16.530583000014303,
+      "failureRate": 0,
+      "rowsRead": 1000,
+      "rowsWritten": 0,
+      "queryPlan": [
+        {
+          "id": 7,
+          "parent": 0,
+          "notused": 62,
+          "detail": "SEARCH job_dispatch_intents USING INDEX idx_job_dispatch_due (state=?)"
+        },
+        {
+          "id": 31,
+          "parent": 0,
+          "notused": 0,
+          "detail": "USE TEMP B-TREE FOR ORDER BY"
+        }
+      ]
+    }
+  },
+  "after": {
+    "history": {
+      "samples": 100,
+      "p50Ms": 10.112125000014203,
+      "p95Ms": 12.674124999990454,
+      "p99Ms": 14.537125000002561,
+      "failureRate": 0,
+      "rowsRead": 21,
+      "rowsWritten": 0,
+      "queryPlan": [
+        {
+          "id": 7,
+          "parent": 0,
+          "notused": 62,
+          "detail": "SEARCH jobs USING INDEX benchmark_history (telegram_user_id=?)"
+        }
+      ]
+    },
+    "cache": {
+      "samples": 100,
+      "p50Ms": 10.13670900001307,
+      "p95Ms": 14.211999999999534,
+      "p99Ms": 15.034167000005255,
+      "failureRate": 0,
+      "rowsRead": 1,
+      "rowsWritten": 0,
+      "queryPlan": [
+        {
+          "id": 5,
+          "parent": 0,
+          "notused": 55,
+          "detail": "SEARCH jobs USING INDEX benchmark_cache (telegram_user_id=? AND telegram_chat_id=? AND source_url_hash=? AND requested_mode=? AND requested_quality=? AND processing_policy_version=?)"
+        }
+      ]
+    },
+    "stats": {
+      "samples": 100,
+      "p50Ms": 10.614625000016531,
+      "p95Ms": 13.090832999994745,
+      "p99Ms": 15.34375,
+      "failureRate": 0,
+      "rowsRead": 12500,
+      "rowsWritten": 0,
+      "queryPlan": [
+        {
+          "id": 7,
+          "parent": 0,
+          "notused": 61,
+          "detail": "SEARCH jobs USING INDEX idx_jobs_status_created (status=?)"
+        },
+        {
+          "id": 16,
+          "parent": 0,
+          "notused": 0,
+          "detail": "USE TEMP B-TREE FOR GROUP BY"
+        }
+      ]
+    },
+    "recovery": {
+      "samples": 100,
+      "p50Ms": 9.38070899999002,
+      "p95Ms": 11.351124999986496,
+      "p99Ms": 22.812917000002926,
+      "failureRate": 0,
+      "rowsRead": 20,
+      "rowsWritten": 0,
+      "queryPlan": [
+        {
+          "id": 7,
+          "parent": 0,
+          "notused": 62,
+          "detail": "SEARCH job_dispatch_intents USING INDEX benchmark_recovery (state=?)"
+        }
+      ]
+    }
+  },
+  "completedMetadataUpdate": {
+    "before": {
+      "samples": 100,
+      "p50Ms": 9.41562499999418,
+      "p95Ms": 11.563583000010112,
+      "p99Ms": 14.45845800000825,
+      "meanRowsWritten": 1
+    },
+    "after": {
+      "samples": 100,
+      "p50Ms": 9.733584000001429,
+      "p95Ms": 25.10770799999591,
+      "p99Ms": 41.214291999989655,
+      "meanRowsWritten": 2
+    }
+  },
+  "note": "Synthetic warm timings include local D1 binding overhead. Candidate indexes exist only in this disposable database."
+}

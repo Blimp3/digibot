@@ -123,16 +123,3 @@ export function safeContentDisposition(filename: string): string {
   const ascii = safe.replace(/[^\x20-\x7e]/gu, "_").replaceAll('"', "'");
   return `attachment; filename="${ascii}"`;
 }
-
-export function redactQueryForDiagnostics(value: string): string {
-  try {
-    const url = new URL(value);
-    const sensitive = /token|secret|key|sig|signature|auth|password|cookie|code/iu;
-    for (const key of url.searchParams.keys()) {
-      if (sensitive.test(key)) url.searchParams.set(key, "[REDACTED]");
-    }
-    return url.toString();
-  } catch {
-    return "[INVALID_URL]";
-  }
-}

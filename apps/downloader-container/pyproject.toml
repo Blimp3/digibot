@@ -1,0 +1,64 @@
+[project]
+name = "private-media-downloader-container"
+version = "5.0.0"
+description = "Private, authenticated media downloader Container service"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "boto3==1.39.17",
+  "fastapi==0.140.8",
+  "httpx==0.28.1",
+  "pydantic==2.11.7",
+  "starlette==1.3.1",
+  "uvicorn==0.35.0",
+  "yt-dlp[default]>=2026.7.4",
+]
+
+[dependency-groups]
+dev = [
+  "mypy==1.17.1",
+  "pytest==8.4.1",
+  "pytest-asyncio==1.1.0",
+  "ruff==0.12.7",
+]
+
+[project.scripts]
+downloader-container = "downloader_container.__main__:main"
+
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/downloader_container"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+  "live: opt-in test which may contact a public media source",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["downloader_container"]
+mypy_path = "src"
+warn_unused_ignores = true
+
+[tool.uv]
+package = true
+required-version = ">=0.9.26"
+exclude-newer = "2026-08-19T23:59:59Z"
+# urllib3 2.7.0 fails the release audit (CVE-2026-97687, -97688, -97689); the
+# 2.8.0 fix shipped after the cutoff above. Remove once exclude-newer passes it.
+exclude-newer-package = { urllib3 = "2026-09-15T23:59:59Z" }

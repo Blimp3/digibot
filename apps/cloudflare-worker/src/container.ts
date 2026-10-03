@@ -14,18 +14,8 @@ export class DownloaderContainer extends Container {
   pingEndpoint = "health";
   envVars: Record<string, string> = {};
 
-  override async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-    if (url.pathname === "/health" && request.method === "GET") {
-      return new Response(JSON.stringify({ ok: true, service: "downloader-container" }), { headers: { "content-type": "application/json" } });
-    }
-    if (!url.pathname.startsWith("/v1/")) return new Response("Not Found", { status: 404 });
-    const expected = (this.env as unknown as { INTERNAL_CONTAINER_SECRET?: string }).INTERNAL_CONTAINER_SECRET ?? "";
-    const supplied = request.headers.get("authorization") ?? "";
-    const token = supplied.startsWith("Bearer ") ? supplied.slice("Bearer ".length) : "";
-    if (!expected || !token || !constantTimeEqualString(expected, token)) return new Response("Unauthorized", { status: 401 });
-    this.envVars = containerEnvironment(this.env as unknown as Record<string, unknown>);
-    return this.containerFetch(request);
+  override fetch(request: Request): Promise<Response> {
+    return guardedContainerFetch(this, request, this.env, containerEnvironment);
   }
 }
 
@@ -41,17 +31,22 @@ export class TranscriptionContainer extends Container {
   pingEndpoint = "health";
   envVars: Record<string, string> = {};
 
-  override async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-    this.envVars = transcriptionContainerEnvironment(this.env as unknown as Record<string, unknown>);
-    if (url.pathname === "/health" && request.method === "GET") return this.containerFetch(request);
-    if (!url.pathname.startsWith("/v1/")) return new Response("Not Found", { status: 404 });
-    const expected = (this.env as unknown as { INTERNAL_CONTAINER_SECRET?: string }).INTERNAL_CONTAINER_SECRET ?? "";
-    const supplied = request.headers.get("authorization") ?? "";
-    const token = supplied.startsWith("Bearer ") ? supplied.slice("Bearer ".length) : "";
-    if (!expected || !token || !constantTimeEqualString(expected, token)) return new Response("Unauthorized", { status: 401 });
-    return this.containerFetch(request);
+  override fetch(request: Request): Promise<Response> {
+    return guardedContainerFetch(this, request, this.env, transcriptionContainerEnvironment);
   }
+}
+
+/** Shared boundary: unauthenticated GET /health, 404 outside /v1/, bearer secret for /v1/. */
+async function guardedContainerFetch(container: Container, request: Request, env: unknown, environment: typeof containerEnvironment): Promise<Response> {
+  const url = new URL(request.url);
+  container.envVars = environment(env as Record<string, unknown>);
+  if (url.pathname === "/health" && request.method === "GET") return container.containerFetch(request);
+  if (!url.pathname.startsWith("/v1/")) return new Response("Not Found", { status: 404 });
+  const expected = (env as { INTERNAL_CONTAINER_SECRET?: string }).INTERNAL_CONTAINER_SECRET ?? "";
+  const supplied = request.headers.get("authorization") ?? "";
+  const token = supplied.startsWith("Bearer ") ? supplied.slice("Bearer ".length) : "";
+  if (!expected || !token || !constantTimeEqualString(expected, token)) return new Response("Unauthorized", { status: 401 });
+  return container.containerFetch(request);
 }
 
 export function containerEnvironment(env: Record<string, unknown>): Record<string, string> {

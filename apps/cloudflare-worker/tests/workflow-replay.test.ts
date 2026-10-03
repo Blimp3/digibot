@@ -178,7 +178,7 @@ describe("real D1 Workflow named-step replay boundary", () => {
       throw new Error("delivery must not run");
     });
     const step = new CachedStep(undefined, undefined, async (name) => {
-      if (name !== "load delivery state") return;
+      if (name !== "load job state") return;
       await db.prepare(
         "UPDATE job_dispatch_intents SET state = 'started', generation = 2 WHERE job_id = ?1",
       ).bind(JOB_ID).run();

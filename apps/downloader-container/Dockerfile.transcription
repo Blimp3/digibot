@@ -1,0 +1,108 @@
+# Dedicated transcript Container image. Build and run this image as linux/amd64.
+FROM --platform=linux/amd64 debian:bookworm-slim AS whisper-build
+
+ARG WHISPER_COMMIT=1fe009caeda75f69bc864d6370b10674e45a92bd
+ARG WHISPER_MODEL_URL=https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
+ARG WHISPER_MODEL_SHA256=1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y build-essential ca-certificates cmake curl git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git init /src/whisper.cpp \
+    && git -C /src/whisper.cpp remote add origin https://github.com/ggml-org/whisper.cpp.git \
+    && git -C /src/whisper.cpp fetch --depth=1 origin "${WHISPER_COMMIT}" \
+    && git -C /src/whisper.cpp checkout --detach FETCH_HEAD \
+    && test "$(git -C /src/whisper.cpp rev-parse HEAD)" = "${WHISPER_COMMIT}"
+
+RUN cmake -S /src/whisper.cpp -B /src/whisper.cpp/build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=ON \
+        -DGGML_BACKEND_DL=ON \
+        -DGGML_BACKEND_DIR=/usr/local/lib/whisper \
+        -DGGML_CPU_ALL_VARIANTS=ON \
+        -DWHISPER_BUILD_TESTS=OFF \
+        -DWHISPER_BUILD_EXAMPLES=ON \
+        -DWHISPER_BUILD_SERVER=OFF \
+        -DWHISPER_CURL=OFF \
+        -DWHISPER_SDL2=OFF \
+        -DGGML_NATIVE=OFF \
+        -DGGML_CCACHE=OFF \
+        -DGGML_METAL=OFF \
+        -DGGML_CUDA=OFF \
+        -DGGML_VULKAN=OFF \
+        -DGGML_OPENMP=OFF \
+        -DGGML_BLAS=OFF \
+        -DGGML_AVX=OFF \
+        -DGGML_AVX2=OFF \
+        -DGGML_AVX512=OFF \
+        -DGGML_BMI2=OFF \
+        -DGGML_F16C=OFF \
+        -DGGML_FMA=OFF \
+        -DGGML_SSE42=OFF \
+    && cmake --build /src/whisper.cpp/build --config Release --parallel 2 \
+    && test -x /src/whisper.cpp/build/bin/whisper-cli \
+    && install -d -m 0755 /opt/whisper-runtime/usr/local/bin /opt/whisper-runtime/usr/local/lib/whisper \
+    && install -m 0755 /src/whisper.cpp/build/bin/whisper-cli /opt/whisper-runtime/usr/local/bin/whisper-cli \
+    && find /src/whisper.cpp/build/bin -maxdepth 1 -name 'libwhisper.so*' -exec cp -a {} /opt/whisper-runtime/usr/local/lib/ \; \
+    && find /src/whisper.cpp/build/bin -maxdepth 1 -name 'libggml.so*' -exec cp -a {} /opt/whisper-runtime/usr/local/lib/ \; \
+    && find /src/whisper.cpp/build/bin -maxdepth 1 -name 'libggml-base.so*' -exec cp -a {} /opt/whisper-runtime/usr/local/lib/ \; \
+    && find /src/whisper.cpp/build/bin -maxdepth 1 -name 'libggml-cpu*.so*' -exec cp -a {} /opt/whisper-runtime/usr/local/lib/whisper/ \; \
+    && test -s /opt/whisper-runtime/usr/local/bin/whisper-cli \
+    && test -n "$(find /opt/whisper-runtime/usr/local/lib/whisper -maxdepth 1 -name 'libggml-cpu-*.so*' -print -quit)"
+
+RUN install -d -m 0755 /opt/whisper \
+    && curl --fail --location --retry 3 --retry-delay 2 --output /opt/whisper/ggml-small.bin "${WHISPER_MODEL_URL}" \
+    && echo "${WHISPER_MODEL_SHA256}  /opt/whisper/ggml-small.bin" | sha256sum --check --strict \
+    && test "$(stat -c '%s' /opt/whisper/ggml-small.bin)" -gt 0 \
+    && chmod 0444 /opt/whisper/ggml-small.bin
+
+FROM --platform=linux/amd64 denoland/deno:bin-2.8.3 AS deno
+
+FROM --platform=linux/amd64 python:3.12-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/src \
+    PATH=/app/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin \
+    DENO_DIR=/tmp/deno \
+    DENO_PATH=/usr/local/bin/deno \
+    YT_DLP_PATH=/app/.venv/bin/yt-dlp \
+    FFMPEG_PATH=/usr/bin/ffmpeg \
+    FFPROBE_PATH=/usr/bin/ffprobe \
+    WHISPER_PATH=/usr/local/bin/whisper-cli \
+    WHISPER_MODEL_PATH=/opt/whisper/ggml-small.bin \
+    WHISPER_THREADS=1 \
+    JOB_OPERATION=transcript \
+    LD_LIBRARY_PATH=/usr/local/lib:/usr/local/lib/whisper \
+    JOBS_ROOT=/tmp/media-jobs \
+    PORT=8080
+
+COPY --from=deno /deno /usr/local/bin/deno
+COPY --from=whisper-build /opt/whisper-runtime/usr/local/bin/whisper-cli /usr/local/bin/whisper-cli
+COPY --from=whisper-build /opt/whisper-runtime/usr/local/lib/ /usr/local/lib/
+COPY --from=whisper-build /opt/whisper/ggml-small.bin /opt/whisper/ggml-small.bin
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y ca-certificates ffmpeg libstdc++6 passwd \
+    && rm -rf /var/lib/apt/lists/* \
+    && chmod 0755 /usr/local/bin/deno /usr/local/bin/whisper-cli
+
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+COPY src ./src
+
+RUN python -m pip install --no-cache-dir --disable-pip-version-check 'uv==0.9.26' \
+    && uv sync --frozen --no-dev
+
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin downloader \
+    && mkdir -p /tmp/media-jobs /tmp/deno \
+    && chown -R downloader:downloader /tmp/media-jobs /tmp/deno
+
+USER downloader
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+    CMD ["python", "-m", "downloader_container", "--check-dependencies"]
+
+CMD ["python", "-m", "downloader_container", "--serve", "--strict-dependencies"]

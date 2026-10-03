@@ -11,7 +11,7 @@ const miniflare = createRequire(require.resolve("wrangler/package.json"))("minif
 
 export async function applyMigrationSql(db: D1BatchDatabaseLike, sql: string): Promise<void> {
   let statement = "";
-  // ponytail: checked-in statements end on line boundaries; use a SQLite
+  // Known limit: checked-in statements end on line boundaries; use a SQLite
   // parser before accepting arbitrary SQL input here.
   for (const line of sql.split("\n")) {
     if (line.trim().startsWith("--") || !line.trim()) continue;

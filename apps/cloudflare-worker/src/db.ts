@@ -193,10 +193,6 @@ export async function getJob(db: D1DatabaseLike, jobId: string): Promise<JobReco
   return statement(db, "SELECT * FROM jobs WHERE id = ?1", jobId).first<JobRecord>();
 }
 
-export async function getJobByUpdateId(db: D1DatabaseLike, updateId: string): Promise<JobRecord | null> {
-  return statement(db, "SELECT * FROM jobs WHERE telegram_update_id = ?1", updateId).first<JobRecord>();
-}
-
 export async function getLatestJobForUser(db: D1DatabaseLike, userId: string): Promise<JobRecord | null> {
   return statement(db, "SELECT * FROM jobs WHERE telegram_user_id = ?1 ORDER BY created_at DESC, id DESC LIMIT 1", userId).first<JobRecord>();
 }
@@ -687,14 +683,12 @@ export async function listStartedDispatchIntents(db: D1DatabaseLike, limit = 50)
      FROM job_dispatch_intents intent
      JOIN jobs job ON job.id = intent.job_id
      JOIN job_deliveries delivery ON delivery.job_id = intent.job_id
-     WHERE intent.state = 'started'
-        OR (
-          intent.state IN ('pending', 'leased')
-          AND (
-            job.status IN ('completed', 'failed')
-            OR delivery.state <> 'not_started'
-          )
-        )
+     WHERE intent.state IN ('started', 'pending', 'leased')
+       AND (
+         intent.state = 'started'
+         OR job.status IN ('completed', 'failed')
+         OR delivery.state <> 'not_started'
+       )
      ORDER BY intent.updated_at ASC, intent.job_id ASC
      LIMIT ?1`,
     bounded,
@@ -704,6 +698,23 @@ export async function listStartedDispatchIntents(db: D1DatabaseLike, limit = 50)
 
 export async function getJobDelivery(db: D1DatabaseLike, jobId: string): Promise<JobDeliveryRecord | null> {
   return statement(db, "SELECT * FROM job_deliveries WHERE job_id = ?1", jobId).first<JobDeliveryRecord>();
+}
+
+/** Read the job, dispatch intent, and delivery rows for one job in a single D1 round trip. */
+export async function getJobDurableState(
+  db: D1BatchDatabaseLike,
+  jobId: string,
+): Promise<{ job: JobRecord | null; intent: DispatchIntentRecord | null; delivery: JobDeliveryRecord | null }> {
+  const [job, intent, delivery] = await db.batch([
+    statement(db, "SELECT * FROM jobs WHERE id = ?1", jobId),
+    statement(db, "SELECT * FROM job_dispatch_intents WHERE job_id = ?1", jobId),
+    statement(db, "SELECT * FROM job_deliveries WHERE job_id = ?1", jobId),
+  ]);
+  return {
+    job: (job?.results?.[0] as JobRecord | undefined) ?? null,
+    intent: (intent?.results?.[0] as DispatchIntentRecord | undefined) ?? null,
+    delivery: (delivery?.results?.[0] as JobDeliveryRecord | undefined) ?? null,
+  };
 }
 
 /**
@@ -1017,7 +1028,8 @@ export interface NewJob {
   telegramUpdateId: string;
   telegramUserId: string;
   telegramChatId: string;
-  requestMessageId: string;
+  /** The Telegram message that asked for the job; a gateway request has none. */
+  requestMessageId?: string | null;
   sourceHost: string;
   sourceKind?: JobSourceKind;
   sourceUrlHash: string;
@@ -1031,6 +1043,8 @@ export interface NewJob {
   requestedEndSeconds?: number | null;
   requestedClipRanges?: TrimRange[] | null;
   processingPolicyVersion?: string;
+  /** Set false for clients without Telegram commands, so the queue notice skips the /queue hint. */
+  queueCommandHint?: boolean;
   createdAt: string;
 }
 
@@ -1039,15 +1053,6 @@ export interface JobAdmissionLimits {
   maxActiveTranscriptions?: number;
   maxJobsPerHour: number;
   hourlyWindowStart: string;
-}
-
-export async function reserveUpdate(db: D1DatabaseLike, updateId: string, jobId: string | null, createdAt: string): Promise<boolean> {
-  try {
-    await statement(db, "INSERT INTO processed_updates (telegram_update_id, job_id, created_at) VALUES (?1, ?2, ?3)", updateId, jobId, createdAt).run();
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /** Claim once before fetching a file; the existing receipt cleanup owns retention. */
@@ -1102,7 +1107,7 @@ function newJobStatement(db: D1DatabaseLike, job: NewJob): D1PreparedStatementLi
     job.telegramUpdateId,
     job.telegramUserId,
     job.telegramChatId,
-    job.requestMessageId,
+    job.requestMessageId ?? null,
     job.sourceHost,
     job.sourceUrlHash,
     job.sourceUrlEncrypted,
@@ -1123,9 +1128,10 @@ function newJobStatement(db: D1DatabaseLike, job: NewJob): D1PreparedStatementLi
 function queueNoticeStatement(db: D1DatabaseLike, job: NewJob): D1PreparedStatementLike {
   const lane = jobLaneSql("current_job");
   const olderLane = jobLaneSql("older");
+  const hint = job.queueCommandHint === false ? "" : " Use /queue for current status.";
   const text = job.requestedOperation === "transcript" && job.transcriptMethod !== "captions"
-    ? "Queued in the Whisper transcription queue. Position when accepted: {position}. Use /queue for current status. Starts automatically."
-    : "Queued in the download/captions queue. Position when accepted: {position}. Use /queue for current status. Starts automatically.";
+    ? `Queued in the Whisper transcription queue. Position when accepted: {position}.${hint} Starts automatically.`
+    : `Queued in the download/captions queue. Position when accepted: {position}.${hint} Starts automatically.`;
   return statement(
     db,
     `INSERT INTO telegram_notices (update_id, chat_id, text, created_at, updated_at)
@@ -1384,10 +1390,6 @@ export async function deleteTerminalJobForUser(db: D1DatabaseLike, jobId: string
     userId,
   ).run();
   return (result.meta?.changes ?? 0) > 0;
-}
-
-export async function deleteJob(db: D1DatabaseLike, jobId: string): Promise<void> {
-  await statement(db, "DELETE FROM jobs WHERE id = ?1", jobId).run();
 }
 
 export async function deleteOldProcessedUpdates(db: D1DatabaseLike, beforeIso: string): Promise<void> {

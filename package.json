@@ -1,8 +1,8 @@
 {
-  "name": "digibot-worker-synthetic-demo",
-  "version": "4.3.0",
+  "name": "private-media-downloader",
+  "version": "5.0.0",
   "private": true,
-  "description": "Provider-free DigiBot Worker integration demo",
+  "description": "Private Telegram media downloader",
   "license": "MIT",
   "packageManager": "pnpm@11.19.0",
   "engines": {
@@ -10,11 +10,15 @@
     "pnpm": ">=10.0.0"
   },
   "scripts": {
-    "typecheck": "pnpm --dir apps/cloudflare-worker typecheck",
-    "lint": "pnpm --dir apps/cloudflare-worker lint",
-    "test": "pnpm --dir apps/cloudflare-worker test",
+    "build": "pnpm --filter private-media-downloader-worker exec wrangler deploy --dry-run --containers-rollout none",
+    "typecheck": "tsc -p tsconfig.json && pnpm -r --if-present typecheck",
+    "lint": "eslint scripts --max-warnings=0 && pnpm -r --if-present lint",
+    "test": "pnpm -r --if-present test",
     "secret:scan": "./scripts/scan-secrets.sh",
-    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm secret:scan"
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm secret:scan",
+    "check:py": "cd apps/downloader-container && uv sync --frozen --all-groups && uv run ruff check . && uv run mypy src && uv run pytest && uv run python ../../tools/test_asr_eval.py",
+    "worker:dev": "pnpm --filter private-media-downloader-worker dev",
+    "worker:deploy": "pnpm --filter private-media-downloader-worker exec wrangler deploy --containers-rollout none"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",

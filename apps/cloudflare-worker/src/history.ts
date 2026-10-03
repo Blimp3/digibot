@@ -179,7 +179,8 @@ async function listHistory(url: URL, storage: DownloaderMiniAppStorage): Promise
   } catch { return apiError(400, "INVALID_REQUEST", "The history request is invalid."); }
   try {
     const page = await storage.listHistory({ limit, cursor, window });
-    const summary = await storage.getActivityStats(window);
+    // A cursor page shares the first page's frozen window; the client keeps that summary.
+    const summary = cursor ? null : await storage.getActivityStats(window);
     return jsonResponse({
       items: page.jobs.map((job) => historyItemForJob(job, now)),
       nextCursor: page.nextCursor ? encodeCursor(page.nextCursor, window) : null,

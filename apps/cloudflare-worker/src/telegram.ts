@@ -324,7 +324,7 @@ export class TelegramClient {
       throw new TelegramApiError("sendDocument", 400, undefined, "rejected");
     }
 
-    const boundary = `codex-${crypto.randomUUID().replaceAll("-", "")}`;
+    const boundary = `digibot-${crypto.randomUUID().replaceAll("-", "")}`;
     const prefix = new TextEncoder().encode(
       `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n`
       + `--${boundary}\r\nContent-Disposition: form-data; name="disable_content_type_detection"\r\n\r\ntrue\r\n`
@@ -420,6 +420,7 @@ export class TelegramClient {
     chatId: string,
     text: string,
     replyMarkup?: { inline_keyboard: TelegramInlineKeyboardButton[][] },
+    replyToMessageId?: number,
   ): Promise<TelegramMessageResult> {
     // Message creation is non-idempotent. Retry only Telegram's explicit 429
     // rejection, which confirms that no message was created.
@@ -428,6 +429,8 @@ export class TelegramClient {
       text: text.slice(0, 4096),
       disable_web_page_preview: true,
       ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+      // A deleted target still gets the message, just not threaded under it.
+      ...(replyToMessageId !== undefined ? { reply_parameters: { message_id: replyToMessageId, allow_sending_without_reply: true } } : {}),
     }, "rate-limit-only");
     if (typeof result !== "object" || result === null
       || !Number.isSafeInteger((result as { message_id?: unknown }).message_id)
@@ -464,14 +467,6 @@ export class TelegramClient {
     return this.call<boolean>("sendChatAction", { chat_id: chatId, action }, "retry-safe");
   }
 
-  async sendDownloadLink(chatId: string, filename: string, sizeBytes: number, expiresAt: string, link: string): Promise<TelegramMessageResult> {
-    const size = formatBytes(sizeBytes);
-    const expiry = new Date(expiresAt).toISOString();
-    return this.sendMessage(chatId, `${filename}\n${size}\nTemporary link expires: ${expiry}`, {
-      inline_keyboard: [[{ text: "Download", url: link }]],
-    });
-  }
-
   /**
    * Copy a previously delivered media message within the same private chat.
    * This is intentionally one-shot: retrying after an ambiguous response could
@@ -489,12 +484,6 @@ export class TelegramClient {
     return result;
   }
 
-}
-
-function formatBytes(value: number): string {
-  if (!Number.isFinite(value) || value < 0) return "unknown size";
-  if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
-  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function delay(milliseconds: number): Promise<void> {

@@ -14,9 +14,6 @@ export type TrimParseResult =
 export const TRIM_TIMING_HELP =
   "Timing: use ‘first <duration>’, ‘from <timestamp> for <duration>’, or ‘from <timestamp> to <timestamp>’. Use positive whole seconds, minutes, hours, or MM:SS/HH:MM:SS timestamps up to 24 hours; MM:SS means minutes:seconds.";
 
-export const TRIM_TIMING_EXAMPLES =
-  "Examples: ‘first 5 minutes’, ‘from 12:00 for 5 minutes’, or ‘from 12:00 to 17:00’.";
-
 function failure(code: TrimParseErrorCode, message: string): TrimParseResult {
   return { ok: false, code, message: `${message} ${TRIM_TIMING_HELP}` };
 }

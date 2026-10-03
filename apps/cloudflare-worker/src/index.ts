@@ -11,6 +11,7 @@ import {
 } from "./mini-app-router";
 import { handleTelegramWebhook } from "./webhook";
 import { recoverAndReconcileDispatches } from "./dispatch";
+import { repairMissingDurableState } from "./db";
 import { dispatchNotices } from "./notices";
 import { logStructured } from "./logging";
 import { handleDiagnostics } from "./diagnostics";
@@ -44,7 +45,7 @@ function healthResponse(env: Pick<Env, "CF_VERSION_METADATA">): Response {
   return new Response(JSON.stringify({
     ok: true,
     service: "private-media-downloader",
-    version: "4.3.0",
+    version: "5.0.0",
     versionMetadata: versionMetadataResponse(env),
   }), {
     status: 200,
@@ -92,7 +93,7 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/health" && request.method === "GET") return healthResponse(env);
     if (url.pathname === "/ready" && request.method === "GET") return readinessResponse(env);
-    const integration = await handleIntegrationRequest(request, env);
+    const integration = await handleIntegrationRequest(request, env, ctx ? ctx.waitUntil.bind(ctx) : undefined);
     if (integration) return integration;
     const miniAppRoute = resolveMiniAppRoute(url.pathname);
     if (miniAppRoute && !miniAppRouteAllowsMethod(miniAppRoute, request.method)) {
@@ -149,6 +150,12 @@ export default {
     if (controller.cron === "*/15 * * * *") {
       await cleanupExpiredR2Jobs(env);
       if (env.INTEGRATION_ENABLED !== undefined) await cleanupIntegrationMedia(env);
+      try {
+        // Runs 15x less often than the minute scan, so it keeps a full 100-row batch to preserve drain capacity.
+        if (await repairMissingDurableState(env.DB, new Date(), 100) > 0) logStructured("media_dispatch_legacy_repair", { state: "reconciled" });
+      } catch {
+        logStructured("media_dispatch_legacy_repair", { state: "deferred", errorCode: "INTERNAL_ERROR" });
+      }
     }
   },
 };

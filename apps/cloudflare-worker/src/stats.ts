@@ -34,29 +34,8 @@ function normalizedHostname(sourceHost: string | null | undefined): string {
  * and the existing schema has no durable subtype field.
  */
 export function statsSourceLabelForHost(sourceHost: string | null | undefined): StatsSourceLabel {
-  const source = sourceForValidatedUrl({ hostname: normalizedHostname(sourceHost) });
-  switch (source?.id) {
-    case "youtube":
-      return "YouTube";
-    case "youtube-music":
-      return "YouTube Music";
-    case "instagram":
-      return "Instagram";
-    case "tiktok":
-      return "TikTok";
-    case "x-twitter":
-      return "X/Twitter";
-    case "vimeo":
-      return "Vimeo";
-    case "reddit":
-      return "Reddit";
-    case "pinterest":
-      return "Pinterest";
-    case "ted":
-      return "TED";
-    default:
-      return "Other/Unknown";
-  }
+  const displayName = sourceForValidatedUrl({ hostname: normalizedHostname(sourceHost) })?.displayName;
+  return STATS_SOURCE_LABELS.find((label) => label === displayName) ?? "Other/Unknown";
 }
 
 function orderedBreakdown<TLabel extends string>(
@@ -142,7 +121,7 @@ export async function getUserActivityStats(db: D1DatabaseLike, userId: string, o
   const tasks = new Map<ActivityTask, number>();
   const sources = new Map<string, number>();
   let cursor: JobHistoryCursor | undefined;
-  // ponytail: O(retained jobs), bounded pages; outcomes are not a transactional snapshot.
+  // Known limit: O(retained jobs), bounded pages; outcomes are not a transactional snapshot.
   // Add a validated durable summary only if history scale requires it. Errors must reject, never return partial totals.
   for (;;) {
     const rows = await listActivityJobsForUser(db, userId, window, cursor);
