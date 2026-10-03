@@ -173,6 +173,11 @@ have permission to download. It does not bypass DRM, paywalls, logins, CAPTCHAs
 or private-media controls. You are responsible for following each platform's
 terms and copyright law. Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 
+## Acknowledgements
+
+Built with [Claude Code](https://www.anthropic.com/claude-code), Anthropic's
+AI coding assistant, as a development partner for code, tests, reviews and docs.
+
 ## License
 
 [MIT](LICENSE) © 2026 Blimp3. Third-party dependencies keep their own licenses.
