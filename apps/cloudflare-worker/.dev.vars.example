@@ -1,0 +1,27 @@
+TELEGRAM_BOT_TOKEN=replace-me
+TELEGRAM_WEBHOOK_SECRET=replace-with-a-random-1-to-256-character-secret
+INTERNAL_CONTAINER_SECRET=replace-with-a-random-internal-secret
+# Exactly two distinct positive numeric Telegram user IDs, separated by a comma.
+ALLOWED_TELEGRAM_USER_IDS=replace-with-first-user-id,replace-with-second-user-id
+DOWNLOAD_LINK_HMAC_SECRET=replace-with-a-random-signing-secret
+JOB_TIMEOUT_SECONDS=1200
+MAX_MEDIA_DURATION_SECONDS=7200
+MAX_ACTIVE_TRANSCRIPTIONS=1
+MAX_TRANSCRIPT_DURATION_SECONDS=900
+TRANSCRIPTION_TIMEOUT_SECONDS=1800
+MAX_SOURCE_BYTES=524288000
+MAX_TELEGRAM_BYTES=49000000
+MAX_URL_LENGTH=2048
+MAX_REQUEST_BODY_BYTES=16384
+MAX_TEMP_DISK_BYTES=1000000000
+DOWNLOAD_TIMEOUT_SECONDS=1200
+PROBE_TIMEOUT_SECONDS=90
+FFMPEG_TIMEOUT_SECONDS=600
+TELEGRAM_UPLOAD_TIMEOUT_SECONDS=600
+PROCESS_TERM_GRACE_SECONDS=10
+MAX_RETRIES=2
+STRICT_DEPENDENCIES=true
+# Only required when the Container uses S3-compatible R2 uploads.
+R2_ENDPOINT=https://replace-account-id.r2.cloudflarestorage.com
+R2_ACCESS_KEY_ID=replace-with-r2-access-key-id
+R2_SECRET_ACCESS_KEY=replace-with-r2-secret-access-key

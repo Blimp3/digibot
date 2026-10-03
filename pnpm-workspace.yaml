@@ -4,6 +4,9 @@ packages:
 # Remove when Miniflare's sharp pin includes the upstream fix.
 overrides:
   "miniflare@5.20260811.1-alpha>sharp": "0.35.4"
+  "undici@7.29.0": "7.29.1"
+  "brace-expansion@1.1.18": "1.1.21"
+  "brace-expansion@5.0.9": "5.0.12"
 
 allowBuilds:
   esbuild: true

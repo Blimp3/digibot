@@ -1,7 +1,7 @@
 import { IntegrationFailure, type IntegrationInput } from "./integration-store";
 
-const IMAGE_POLICY = "content-provenance-c2pa-6273cdcb4f27-v2";
-const AUDIO_POLICY = "openai-content-provenance-v1";
+export const IMAGE_POLICY = "content-provenance-c2pa-6273cdcb4f27-v2";
+export const AUDIO_POLICY = "openai-content-provenance-v1";
 const UUID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/iu;
 const ISO_DATE_TIME = /^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|02-(?:0[1-9]|1\d|2[0-8])))T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/u;
 

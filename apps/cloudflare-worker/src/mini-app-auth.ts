@@ -118,10 +118,6 @@ export function miniAppInitDataFromRequest(request: Request): string | null {
   return initData && encoder.encode(initData).byteLength <= MINI_APP_INIT_DATA_MAX_BYTES ? initData : null;
 }
 
-export function parseMiniAppAllowedUserIds(value: string | undefined): ReadonlySet<string> {
-  return parseAllowedTelegramUserIds(value) ?? new Set();
-}
-
 export async function authenticateMiniAppRequest(
   request: Request,
   botToken: string,

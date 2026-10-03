@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   approveIntegrationPairing,
@@ -6,22 +8,46 @@ import {
   type IntegrationSessionCredentials,
 } from "../src/integration-auth";
 import { handleIntegrationRequest } from "../src/integration";
-import { hashIntegrationBytes, INTEGRATION_CHECK_BYTES } from "../src/integration-store";
+import { attachIntegrationMedia, hashIntegrationBytes, INTEGRATION_CHECK_BYTES, registerIntegrationOperation, type IntegrationInput } from "../src/integration-store";
 import { bytesToBase64Url } from "../src/security";
 import type { D1BatchDatabaseLike, R2BucketLike, R2ObjectLike } from "../src/types";
-import { processIntegrationOperation, type IntegrationEnv, type IntegrationStep } from "../src/integration-media";
+import { processIntegrationOperation, validateIntegrationCheck, type IntegrationEnv, type IntegrationStep } from "../src/integration-media";
+import { AUDIO_POLICY, IMAGE_POLICY } from "../src/integration-verifier";
 import { localD1 } from "./helpers/local-d1";
 import { testFixedLengthStream } from "./helpers/fixed-length-stream";
 
 const NOW = Math.floor(Date.now() / 1000);
 const OWNER = "12345";
 const OTHER = "67890";
-const ORIGIN = "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const ORIGIN = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
 const PNG = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3]);
 const WRONG_PNG = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 4, 5, 6]);
 const CREATED_AT = new Date(NOW * 1000).toISOString();
 
 type WorkflowCall = { id: string; params: unknown; retention: unknown };
+type VerifierRequestContract = { parts: Array<[string, unknown]> };
+type OperationContract = { operationId: string; envelope: { result: { resultRef: string } | null } | null };
+type ApiContract = {
+  policyVersions: unknown;
+  verifierRequests: { validate: VerifierRequestContract; verifyImage: VerifierRequestContract };
+  pairing: Record<string, string>;
+  session: Record<string, string>;
+  awaitingUpload: OperationContract;
+  completedCheck: OperationContract;
+  completedDownload: OperationContract;
+  failed: OperationContract;
+  history: unknown;
+  stats: unknown;
+  deleteOk: unknown;
+  linkDownload: { request: { method: string; path: string; body: unknown }; status: number; response: { jobId: string; state: string } };
+};
+
+const contractText = readFileSync(new URL("./fixtures/integration-api-v1.json", import.meta.url), "utf8");
+const contract = JSON.parse(contractText) as ApiContract;
+const contractSha256 = "408f9fdac058e10d06ff4072883babb27ced004ad58be1113217a3066e69d0f9";
+const CONTRACT_NOW = new Date("2026-09-16T10:00:00.000Z");
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const OPAQUE_TOKEN = /^[A-Za-z0-9_-]{43}$/u;
 
 let db: D1BatchDatabaseLike;
 let dispose: () => Promise<void>;
@@ -83,7 +109,7 @@ function gatewayEnv(): IntegrationEnv {
             mediaSha256: form.get("imageSha256"),
             byteLength: Number(form.get("byteLength")),
             mimeType: form.get("validatedMimeType"),
-            audioDurationSeconds: null,
+            audioDurationSeconds: request.headers.get("x-integration-media-kind") === "audio" ? 5 : null,
           });
         }
         return Response.json({ result: {}, cache: null });
@@ -234,12 +260,16 @@ describe("authenticated integration HTTP gateway", () => {
     expect(registered?.status).toBe(201);
     expect(await responseJson(registered!)).toMatchObject({ operationId, state: "awaiting_upload" });
 
+    const reread = vi.spyOn(env.MEDIA_BUCKET, "get");
     const uploaded = await handleIntegrationRequest(request(session.accessToken, `/api/integration/operations/${operationId}/media`, {
       method: "PUT", contentType: "image/png", body: new Blob([PNG], { type: "image/png" }),
     }), env);
     expect(uploaded?.status).toBe(202);
     expect(await responseJson(uploaded!)).toMatchObject({ operationId, state: "queued" });
-    expect(providerCalls.map((call) => call.path)).toEqual(["/validate"]);
+    expect(providerCalls).toEqual([]);
+    expect(reread).not.toHaveBeenCalled();
+    expect(await db.prepare("SELECT status, admitted_at FROM integration_operations WHERE id = ?1").bind(operationId).first())
+      .toEqual({ status: "queued", admitted_at: expect.any(String) });
     expect(workflowCalls).toHaveLength(1);
     expect(workflowCalls[0]).toMatchObject({ retention: { successRetention: "1 day", errorRetention: "1 day" } });
 
@@ -284,7 +314,6 @@ describe("authenticated integration HTTP gateway", () => {
       const queued = await db.prepare("SELECT run_generation FROM integration_operations WHERE id = ?1 AND account_id = ?2")
         .bind(operationId, session.accountId).first<{ run_generation: number }>();
       await processIntegrationOperation(env, { accountId: session.accountId, operationId, generation: queued?.run_generation ?? 0 }, immediateStep);
-      expect(providerCalls).toHaveLength(0);
 
       const before = await handleIntegrationRequest(request(session.accessToken, "/api/integration/stats"), env);
       expect(await responseJson(before!)).toMatchObject({ downloadsRequested: 1, downloadsConfirmed: 1, downloadsFailed: 0, savedOriginals: 1 });
@@ -323,6 +352,41 @@ describe("authenticated integration HTTP gateway", () => {
       expect(await responseJson(afterFailure!)).toMatchObject({ downloadsRequested: 2, downloadsConfirmed: 1, downloadsFailed: 1, savedOriginals: 0 });
       expect(telegramFetch.mock.calls.filter(([input]) => String(input).endsWith("/sendDocument"))).toHaveLength(2);
       expect(telegramFetch.mock.calls.filter(([input]) => String(input).endsWith("/deleteMessage"))).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("refuses to delete a saved copy the user sent and shows its receipt with four keys", async () => {
+    const session = await pairedSession(OWNER, 12);
+    const account = { accountId: session.accountId, telegramUserId: OWNER, chatId: OWNER };
+    const operationId = "99999999-9999-4999-8999-999999999994";
+    const value = input(operationId) as unknown as IntegrationInput;
+    const operation = await registerIntegrationOperation(db, account, { input: value }, CREATED_AT);
+    // A Telegram check keeps the user's own image message as the saved copy.
+    const saved = { botId: "123456", chatId: OWNER, messageId: "700", fileId: "incoming-image" };
+    await attachIntegrationMedia(db, operation, value, `integration/${session.accountId}/${operationId}/telegram-image`, new Date(), saved);
+    const archives = () => db.prepare("SELECT * FROM integration_archives WHERE account_id = ?1").bind(session.accountId).all<Record<string, unknown>>();
+    const before = (await archives()).results;
+    expect(before).toHaveLength(1);
+    const telegramFetch = vi.fn(async (input: RequestInfo | URL) => { throw new Error(`Unexpected Telegram request: ${String(input)}`); });
+    vi.stubGlobal("fetch", telegramFetch as unknown as typeof fetch);
+    try {
+      const deleted = await handleIntegrationRequest(request(session.accessToken, `/api/integration/media/${hashIntegrationBytes(PNG)}/archive`, { method: "DELETE" }), env);
+      expect(deleted?.status).toBe(404);
+      expect(await responseJson(deleted!)).toEqual({ error: { code: "not_found", message: "No saved document sent by the bot was found. A copy you sent yourself stays in Telegram.", retryable: false } });
+      expect(telegramFetch).not.toHaveBeenCalled();
+      expect((await archives()).results).toEqual(before);
+
+      const history = await responseJson((await handleIntegrationRequest(request(session.accessToken, "/api/integration/history?period=all"), env))!);
+      const operations = history.operations as Array<{ operationId: string; archive: { deliveryState: string; integrityState: string; documentReceipt: Record<string, string> } }>;
+      expect(operations.map((item) => item.operationId)).toEqual([operationId]);
+      expect(operations[0]?.archive).toMatchObject({ deliveryState: "confirmed", integrityState: "verified", documentReceipt: saved });
+      expect(Object.keys(operations[0]!.archive.documentReceipt).sort()).toEqual(["botId", "chatId", "fileId", "messageId"]);
+      const snapshot = await responseJson((await handleIntegrationRequest(request(session.accessToken, `/api/integration/operations/${operationId}`), env))!);
+      expect(Object.keys((snapshot.archive as { documentReceipt: Record<string, string> }).documentReceipt).sort()).toEqual(["botId", "chatId", "fileId", "messageId"]);
+      const stats = await responseJson((await handleIntegrationRequest(request(session.accessToken, "/api/integration/stats"), env))!);
+      expect(stats).toMatchObject({ checksRequested: 1, savedOriginals: 1 });
     } finally {
       vi.unstubAllGlobals();
     }
@@ -415,5 +479,187 @@ describe("authenticated integration HTTP gateway", () => {
     expect(operation).toEqual({ status: "awaiting_upload", admitted_at: null, temp_key: null });
     expect(providerCalls).toHaveLength(0);
     expect(objects.size).toBe(0);
+  });
+
+  it("keeps /validate for audio Check uploads and none for Download uploads", async () => {
+    const session = await pairedSession(OWNER, 10);
+    const audio = new Uint8Array([73, 68, 51, 4, 0, 0, 0, 0, 0, 0]);
+    const uploads = [
+      { operationId: "99999999-9999-4999-8999-999999999991", bytes: audio, mimeType: "audio/mpeg", body: input("99999999-9999-4999-8999-999999999991", {
+        media: { ...(input("99999999-9999-4999-8999-999999999991").media as Record<string, unknown>),
+          mediaSha256: hashIntegrationBytes(audio), byteLength: audio.byteLength, mimeType: "audio/mpeg", audioDurationSeconds: 5 },
+      }), calls: ["/validate"] },
+      { operationId: "99999999-9999-4999-8999-999999999992", bytes: PNG, mimeType: "image/png",
+        body: input("99999999-9999-4999-8999-999999999992", { action: "download" }), calls: [] },
+    ];
+    for (const upload of uploads) {
+      providerCalls = [];
+      const registered = await handleIntegrationRequest(jsonRequest(session.accessToken, "/api/integration/operations", upload.body), env);
+      expect(registered?.status).toBe(201);
+      const uploaded = await handleIntegrationRequest(request(session.accessToken, `/api/integration/operations/${upload.operationId}/media`, {
+        method: "PUT", contentType: upload.mimeType, body: new Blob([upload.bytes], { type: upload.mimeType }),
+      }), env);
+      expect(uploaded?.status).toBe(202);
+      expect(providerCalls.map((call) => call.path)).toEqual(upload.calls);
+      expect(await db.prepare("SELECT status, admitted_at FROM integration_operations WHERE id = ?1").bind(upload.operationId).first())
+        .toEqual({ status: "queued", admitted_at: expect.any(String) });
+    }
+  });
+
+  it("rejects a WebP header shorter than Lens accepts before admission", async () => {
+    const session = await pairedSession(OWNER, 11);
+    const operationId = "99999999-9999-4999-8999-999999999993";
+    const short = new TextEncoder().encode("RIFFWEBP");
+    const registered = await handleIntegrationRequest(jsonRequest(session.accessToken, "/api/integration/operations", input(operationId, {
+      media: { ...(input(operationId).media as Record<string, unknown>), mediaSha256: hashIntegrationBytes(short), byteLength: short.byteLength, mimeType: "image/webp" },
+    })), env);
+    expect(registered?.status).toBe(201);
+    const uploaded = await handleIntegrationRequest(request(session.accessToken, `/api/integration/operations/${operationId}/media`, {
+      method: "PUT", contentType: "image/webp", body: new Blob([short], { type: "image/webp" }),
+    }), env);
+    expect(uploaded?.status).toBe(400);
+    expect(await responseJson(uploaded!)).toMatchObject({ error: { code: "invalid_media" } });
+    expect(await db.prepare("SELECT status, admitted_at FROM integration_operations WHERE id = ?1").bind(operationId).first())
+      .toEqual({ status: "awaiting_upload", admitted_at: null });
+    expect(objects.size).toBe(0);
+  });
+});
+
+describe("INTEGRATION-API-001 gateway and verifier contract fixture", () => {
+  it("pins the fixture bytes and the shared policy versions", () => {
+    expect(createHash("sha256").update(contractText).digest("hex")).toBe(contractSha256);
+    expect(contract.policyVersions).toEqual({ image: IMAGE_POLICY, audio: AUDIO_POLICY });
+  });
+
+  it("matches every normalized live response and verifier request", async () => {
+    // Freeze only Date so every server timestamp is reproducible; random IDs and tokens are aliased below.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(CONTRACT_NOW);
+    const aliases = new Map<string, string>();
+    const alias = (live: unknown, pattern: RegExp, placeholder: string): void => {
+      expect(live).toMatch(pattern);
+      aliases.set(live as string, placeholder);
+    };
+    const normalized = (value: unknown): unknown => JSON.parse(JSON.stringify(value), (_key, item: unknown) => (
+      typeof item === "string" ? aliases.get(item) ?? item : item));
+    const live = async (response: Response | null, status: number): Promise<Record<string, unknown>> => {
+      expect(response?.status).toBe(status);
+      return responseJson(response!);
+    };
+    const filePart = contract.verifierRequests.validate.parts.find(([name]) => name === "file")?.[1] as { base64: string };
+    const image = Uint8Array.from(Buffer.from(filePart.base64, "base64"));
+
+    const verifierRequests: unknown[] = [];
+    env = { ...env, PROVENANCE_VERIFIER: {
+      fetch: async (verifierRequest: Request) => {
+        const url = new URL(verifierRequest.url);
+        const parts: Array<[string, unknown]> = [];
+        for (const [name, value] of await verifierRequest.formData()) {
+          parts.push([name, typeof value === "string" ? value
+            : { filename: value.name, type: value.type, base64: Buffer.from(await value.arrayBuffer()).toString("base64") }]);
+        }
+        // Record every header; only the random multipart boundary is replaced.
+        const headers = Object.fromEntries([...verifierRequest.headers].map(([name, value]) => (
+          [name, name === "content-type" ? value.replace(/boundary=[^;]+/u, "boundary=<boundary>") : value])));
+        verifierRequests.push({ method: verifierRequest.method, path: url.pathname + url.search, headers, parts });
+        if (url.pathname === "/validate") {
+          const fields = Object.fromEntries(parts) as Record<string, string>;
+          return Response.json({ mediaSha256: fields.imageSha256, byteLength: Number(fields.byteLength), mimeType: fields.validatedMimeType, audioDurationSeconds: null });
+        }
+        const checkedAt = CONTRACT_NOW.toISOString();
+        return Response.json({
+          result: {
+            verdict: "no_supported_openai_signal", summary: "No supported provenance signal was detected.", signals: [], warnings: [],
+            checkedAt, requestId: "22222222-2222-4222-8222-222222222222",
+            contentCredentials: {
+              status: "not_present", signatureValid: false, contentBindingValid: false, signerTrusted: false, issuer: null,
+              actions: [], aiDeclaration: null, validationCodes: [], trustListVersion: "fixture-v1",
+            },
+          },
+          cache: { source: "fresh", originallyCheckedAt: checkedAt, expiresAt: "2026-10-16T10:00:00.000Z", verificationPolicyVersion: IMAGE_POLICY, resultSchemaVersion: 2 },
+        });
+      },
+    } } as unknown as IntegrationEnv;
+    let sendFailure = false;
+    let sent = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/sendDocument")) {
+        await new Response(init?.body).arrayBuffer();
+        if (sendFailure) return Response.json({ ok: false, error_code: 400, description: "rejected" }, { status: 400 });
+        sent += 1;
+        return Response.json({ ok: true, result: { message_id: 100 + sent, chat: { id: Number(OWNER) }, document: { file_id: `saved-file-${100 + sent}` } } });
+      }
+      if (url.endsWith("/getFile")) return Response.json({ ok: true, result: { file_id: "saved-file", file_path: "documents/saved.png", file_size: image.byteLength } });
+      if (url.includes("/file/bot")) return new Response(image.slice());
+      // The link download's queue notice.
+      if (url.endsWith("/sendMessage")) return Response.json({ ok: true, result: { message_id: 99, chat: { id: Number(OWNER) } } });
+      throw new Error(`Unexpected Telegram request: ${url}`);
+    }) as unknown as typeof fetch);
+
+    try {
+      const verifier = bytesToBase64Url(new Uint8Array(32).fill(9));
+      const pairing = await live(await handleIntegrationRequest(authJson("/api/integration/pairings", { verifier, deviceName: "Contract" }, 9), env), 201);
+      alias(pairing.pairId, UUID_V4, contract.pairing.pairId!);
+      alias(pairing.confirmationCode, /^\d{6}$/u, contract.pairing.confirmationCode!);
+      expect(normalized(pairing)).toEqual(contract.pairing);
+      await expect(approveIntegrationPairing(env, {
+        pairId: pairing.pairId as string, confirmationCode: pairing.confirmationCode as string, telegramUserId: OWNER, privateChatId: OWNER,
+      }, CONTRACT_NOW.getTime() / 1000)).resolves.toMatchObject({ telegramUserId: OWNER });
+      const session = await live(await handleIntegrationRequest(authJson(`/api/integration/pairings/${pairing.pairId as string}/exchange`, { verifier }, 9), env), 200);
+      alias(session.accountId, UUID_V4, contract.session.accountId!);
+      alias(session.sessionId, UUID_V4, contract.session.sessionId!);
+      alias(session.accessToken, OPAQUE_TOKEN, contract.session.accessToken!);
+      alias(session.refreshToken, OPAQUE_TOKEN, contract.session.refreshToken!);
+      expect(normalized(session)).toEqual(contract.session);
+
+      const token = session.accessToken as string;
+      const register = (operationId: string, action: "check" | "download") => handleIntegrationRequest(request(token, "/api/integration/operations", {
+        method: "POST", contentType: "application/json", createdAt: CONTRACT_NOW.toISOString(),
+        body: JSON.stringify(input(operationId, { action, media: { ...(input(operationId).media as Record<string, unknown>), mediaSha256: hashIntegrationBytes(image), byteLength: image.byteLength } })),
+      }), env);
+      const uploadAndProcess = async (operationId: string): Promise<void> => {
+        const uploaded = await handleIntegrationRequest(request(token, `/api/integration/operations/${operationId}/media`, {
+          method: "PUT", contentType: "image/png", body: new Blob([image], { type: "image/png" }),
+        }), env);
+        expect(uploaded?.status).toBe(202);
+        const queued = await db.prepare("SELECT run_generation FROM integration_operations WHERE id = ?1")
+          .bind(operationId).first<{ run_generation: number }>();
+        await processIntegrationOperation(env, { accountId: session.accountId as string, operationId, generation: queued?.run_generation ?? 0 }, immediateStep);
+      };
+      const snapshot = async (operationId: string) => live(await handleIntegrationRequest(request(token, `/api/integration/operations/${operationId}`), env), 200);
+
+      const checkId = contract.awaitingUpload.operationId;
+      expect(normalized(await live(await register(checkId, "check"), 201))).toEqual(contract.awaitingUpload);
+      await uploadAndProcess(checkId);
+      const completedCheck = await snapshot(checkId) as unknown as OperationContract;
+      alias(completedCheck.envelope?.result?.resultRef, UUID_V4, contract.completedCheck.envelope!.result!.resultRef);
+      expect(normalized(completedCheck)).toEqual(contract.completedCheck);
+      expect(normalized(await live(await handleIntegrationRequest(request(token, "/api/integration/history"), env), 200))).toEqual(contract.history);
+
+      for (const [expected, failing] of [[contract.completedDownload, false], [contract.failed, true]] as const) {
+        sendFailure = failing;
+        expect((await register(expected.operationId, "download"))?.status).toBe(201);
+        await uploadAndProcess(expected.operationId);
+        expect(normalized(await snapshot(expected.operationId))).toEqual(expected);
+      }
+      expect(normalized(await live(await handleIntegrationRequest(request(token, "/api/integration/stats"), env), 200))).toEqual(contract.stats);
+      expect(await live(await handleIntegrationRequest(request(token, `/api/integration/history/${contract.failed.operationId}`, { method: "DELETE" }), env), 200))
+        .toEqual(contract.deleteOk);
+      // Last, so its legacy job row cannot change the statistics above.
+      const link = contract.linkDownload;
+      const queued = await live(await handleIntegrationRequest(request(token, link.request.path, {
+        method: link.request.method, contentType: "application/json", body: JSON.stringify(link.request.body),
+      }), env), link.status);
+      alias(queued.jobId, UUID_V4, link.response.jobId);
+      expect(normalized(queued)).toEqual(link.response);
+      // Image Check uploads no longer send /validate; the Telegram /check path still sends this exact request.
+      const admitted = await db.prepare("SELECT input_json FROM integration_operations WHERE id = ?1").bind(checkId).first<{ input_json: string }>();
+      await validateIntegrationCheck(env, session.accountId as string, JSON.parse(admitted!.input_json) as IntegrationInput, image);
+      expect(normalized(verifierRequests)).toEqual([contract.verifierRequests.verifyImage, contract.verifierRequests.validate]);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
   });
 });

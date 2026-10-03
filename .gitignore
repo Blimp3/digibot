@@ -35,6 +35,10 @@ GoogleService-Info.plist
 .idea/
 .vscode/
 
+# Local agent configuration
+.claude/
+.codex/
+
 # Logs
 *.log
 npm-debug.log*

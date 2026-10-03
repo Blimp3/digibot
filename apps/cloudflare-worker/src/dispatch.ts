@@ -2,7 +2,6 @@ import {
   claimDueDispatchIntent,
   confirmedDeliveryMessageIds,
   telegramMessageIds,
-  getDispatchIntent,
   getJob,
   getJobDelivery,
   listStartedDispatchIntents,
@@ -12,7 +11,6 @@ import {
   markDispatchStarted,
   positiveTelegramMessageId,
   positiveRetryAfterSeconds,
-  repairMissingDurableState,
   recordDeliveryConfirmed,
   recordDeliveryRejected,
   rescheduleDispatchIntent,
@@ -29,6 +27,7 @@ import type {
   DispatchIntentRecord,
   Env,
   JobDeliveryRecord,
+  JobRecord,
   WorkflowBindingLike,
   WorkflowInstanceLike,
   WorkflowInstanceStatusLike,
@@ -392,29 +391,7 @@ async function reconcileInstance(env: Env, intent: DispatchIntentRecord, instanc
 
   const current = await getJob(env.DB, intent.job_id);
   const stored = await getJobDelivery(env.DB, intent.job_id);
-  if (current && clipCountForJob(current) !== 0 && stored?.state === "confirmed" && confirmedDeliveryMessageIds(stored, current) === null) {
-    await markConfirmedDeliveryConflict(env.DB, intent.job_id, "clip_pack_receipt_incomplete");
-    await markDispatchComplete(env.DB, intent.job_id, intent.generation);
-    return;
-  }
-  if (current?.status === "completed" || current?.status === "failed") {
-    if (stored?.state === "sending") {
-      // A terminal legacy job with an unrecorded send is not proof of a
-      // rejection. Preserve the terminal status but surface the delivery as
-      // unknown before closing its dispatch intent.
-      await markUnknownForRecovery(env, intent.job_id, "terminal_job_without_delivery_receipt", stored.owner_generation ?? undefined);
-    } else if (current.status === "completed" && stored?.state === "not_started") {
-      // A completed legacy row may carry a valid result ID even though the
-      // separate receipt row was not backfilled. Repair that evidence; when
-      // it is absent, surface the mismatch as unknown.
-      const confirmed = fallbackDelivery(current, stored);
-      if (!confirmed || !(await repairConfirmedDelivery(env, intent, confirmed))) {
-        await markUnknownForRecovery(env, intent.job_id, "terminal_job_without_delivery_receipt");
-      }
-    }
-    await markDispatchComplete(env.DB, intent.job_id, intent.generation);
-    return;
-  }
+  if (await settleFromStoredJob(env, intent, current, stored)) return;
 
   if (status.status === "complete") {
     const parsed = parseWorkflowResult(status.output, intent.job_id, current ? clipCountForJob(current) : -1);
@@ -454,6 +431,40 @@ async function reconcileInstance(env: Env, intent: DispatchIntentRecord, instanc
   await markDispatchComplete(env.DB, intent.job_id, intent.generation);
 }
 
+/**
+ * Close an intent whose stored job already decides the outcome: an incomplete
+ * clip-pack receipt, or a terminal job. Returns false when the caller decides.
+ */
+async function settleFromStoredJob(
+  env: Env,
+  intent: DispatchIntentRecord,
+  current: JobRecord | null,
+  delivery: JobDeliveryRecord | null,
+): Promise<boolean> {
+  if (current && clipCountForJob(current) !== 0 && delivery?.state === "confirmed" && confirmedDeliveryMessageIds(delivery, current) === null) {
+    await markConfirmedDeliveryConflict(env.DB, intent.job_id, "clip_pack_receipt_incomplete");
+    await markDispatchComplete(env.DB, intent.job_id, intent.generation);
+    return true;
+  }
+  if (current?.status !== "completed" && current?.status !== "failed") return false;
+  if (delivery?.state === "sending") {
+    // A terminal legacy job with an unrecorded send is not proof of a
+    // rejection. Preserve the terminal status but surface the delivery as
+    // unknown before closing its dispatch intent.
+    await markUnknownForRecovery(env, intent.job_id, "terminal_job_without_delivery_receipt", delivery.owner_generation ?? undefined);
+  } else if (current.status === "completed" && delivery?.state === "not_started") {
+    // A completed legacy row may carry a valid result ID even though the
+    // separate receipt row was not backfilled. Repair that evidence; when
+    // it is absent, surface the mismatch as unknown.
+    const confirmed = fallbackDelivery(current, delivery);
+    if (!confirmed || !(await repairConfirmedDelivery(env, intent, confirmed))) {
+      await markUnknownForRecovery(env, intent.job_id, "terminal_job_without_delivery_receipt");
+    }
+  }
+  await markDispatchComplete(env.DB, intent.job_id, intent.generation);
+  return true;
+}
+
 async function reconcileStartedIntent(env: Env, intent: DispatchIntentRecord): Promise<void> {
   const binding = workflowBinding(env);
   if (!binding?.get) return;
@@ -467,23 +478,8 @@ async function reconcileStartedIntent(env: Env, intent: DispatchIntentRecord): P
     if (!isWorkflowMissingError(error)) return;
     const delivery = await getJobDelivery(env.DB, intent.job_id);
     const current = await getJob(env.DB, intent.job_id);
-    if (current && clipCountForJob(current) !== 0 && delivery?.state === "confirmed" && confirmedDeliveryMessageIds(delivery, current) === null) {
-      await markConfirmedDeliveryConflict(env.DB, intent.job_id, "clip_pack_receipt_incomplete");
-      await markDispatchComplete(env.DB, intent.job_id, intent.generation);
-      return;
-    }
-    if (current?.status === "completed" || current?.status === "failed") {
-      if (delivery?.state === "sending") {
-        await markUnknownForRecovery(env, intent.job_id, "terminal_job_without_delivery_receipt", delivery.owner_generation ?? undefined);
-      } else if (current.status === "completed" && delivery?.state === "not_started") {
-        const confirmed = fallbackDelivery(current, delivery);
-        if (confirmed && !(await repairConfirmedDelivery(env, intent, confirmed))) {
-          await markUnknownForRecovery(env, intent.job_id, "terminal_job_without_delivery_receipt");
-        } else if (!confirmed) {
-          await markUnknownForRecovery(env, intent.job_id, "terminal_job_without_delivery_receipt");
-        }
-      }
-    } else if (delivery?.state === "confirmed") {
+    if (await settleFromStoredJob(env, intent, current, delivery)) return;
+    if (delivery?.state === "confirmed") {
       const confirmed = fallbackDelivery(current, delivery);
       if (confirmed) await repairConfirmedDelivery(env, intent, confirmed);
     } else if (delivery?.state === "rejected") {
@@ -506,9 +502,6 @@ export async function recoverAndReconcileDispatches(
 ): Promise<void> {
   const boundedLimit = Number.isSafeInteger(limit) ? Math.min(100, Math.max(1, limit)) : DISPATCH_RECOVERY_LIMIT;
   try {
-    if (await repairMissingDurableState(env.DB, now, boundedLimit) > 0) {
-      logStructured("media_dispatch_legacy_repair", { state: "reconciled" });
-    }
     const started = await listStartedDispatchIntents(env.DB, boundedLimit);
     for (const intent of started) {
       try {
@@ -522,9 +515,4 @@ export async function recoverAndReconcileDispatches(
   }
 
   await dispatchQueuedJobs(env, now, boundedLimit);
-}
-
-/** Small helper for callers that need to inspect one intent without starting it. */
-export async function getDispatchState(env: Env, jobId: string): Promise<DispatchIntentRecord | null> {
-  return getDispatchIntent(env.DB, jobId);
 }

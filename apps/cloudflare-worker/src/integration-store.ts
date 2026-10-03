@@ -146,26 +146,38 @@ export async function registerIntegrationOperation(
   return existing;
 }
 
-export async function attachIntegrationMedia(db: D1BatchDatabaseLike, operation: IntegrationOperation, input: IntegrationInput, key: string, now = new Date()): Promise<void> {
+/** The Telegram message that already holds the checked bytes, so the check keeps it as its saved copy and sends no copy of it back. */
+export interface IntegrationSavedCopy { botId: string; chatId: string; messageId: string; fileId: string }
+
+export async function attachIntegrationMedia(
+  db: D1BatchDatabaseLike, operation: IntegrationOperation, input: IntegrationInput, key: string, now = new Date(), saved?: IntegrationSavedCopy,
+): Promise<void> {
   const timestamp = now.toISOString();
-  const saved = input.action === "check" && input.media.mimeType.startsWith("image/")
+  const reusable = input.action === "check" && input.media.mimeType.startsWith("image/")
     ? await db.prepare(`SELECT id FROM integration_archives WHERE account_id = ?1 AND media_sha256 = ?2
         AND delivery_state = 'confirmed' AND integrity_state = 'verified' ORDER BY created_at DESC LIMIT 1`)
       .bind(operation.account_id, input.media.mediaSha256).first<{ id: string }>() : null;
   const archiveId = input.media.mimeType.startsWith("image/") || input.action === "download"
-    ? saved?.id ?? hashIntegrationBytes(`${operation.account_id}\0${input.action === "download" ? operation.id : input.media.mediaSha256}`)
+    ? reusable?.id ?? hashIntegrationBytes(`${operation.account_id}\0${input.action === "download" ? operation.id : input.media.mediaSha256}`)
     : null;
   const statements = [db.prepare(`INSERT INTO integration_media (account_id, sha256, byte_length, mime_type, created_at)
     SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM integration_operations WHERE id = ?6 AND account_id = ?1 AND deleted_at IS NULL AND expires_at > ?5 AND status IN ('awaiting_upload', 'processing', 'queued'))
     ON CONFLICT(account_id, sha256) DO NOTHING`)
     .bind(operation.account_id, input.media.mediaSha256, input.media.byteLength, input.media.mimeType, timestamp, operation.id)];
+  // A copy the user already sent is confirmed and verified at once: the checked bytes were fetched from that very
+  // message. Its receipt carries sender "user" (stripped by integrationArchiveSnapshot) so a delete never removes the
+  // user's own message. It takes over a failed row or the unclaimed pending row of a concurrent Lens Check, never a
+  // sending, unknown or confirmed one; without it the row starts pending, as before.
   if (archiveId) statements.push(db.prepare(`INSERT INTO integration_archives
-    (id, account_id, media_sha256, kind, created_at, updated_at) SELECT ?1, ?2, ?3, ?4, ?5, ?5
+    (id, account_id, media_sha256, kind, delivery_state, receipt_json, integrity_state, round_trip_sha256, created_at, updated_at)
+    SELECT ?1, ?2, ?3, ?4, ?8, ?9, ?10, ?11, ?5, ?5
     WHERE EXISTS (SELECT 1 FROM integration_operations WHERE id = ?6 AND account_id = ?2 AND deleted_at IS NULL AND expires_at > ?5 AND status IN ('awaiting_upload', 'processing', 'queued'))
-    ON CONFLICT(id) DO UPDATE SET delivery_state = 'pending', error_json = NULL, integrity_state = 'not_checked',
-      round_trip_sha256 = NULL, receipt_json = NULL, attempt_started_at = NULL, updated_at = excluded.updated_at
-    WHERE integration_archives.delivery_state = 'failed' AND integration_archives.updated_at < ?7`)
-    .bind(archiveId, operation.account_id, input.media.mediaSha256, input.action === "download" ? "download" : "automatic", timestamp, operation.id, operation.requested_at));
+    ON CONFLICT(id) DO UPDATE SET delivery_state = excluded.delivery_state, error_json = NULL, integrity_state = excluded.integrity_state,
+      round_trip_sha256 = excluded.round_trip_sha256, receipt_json = excluded.receipt_json, attempt_started_at = NULL, updated_at = excluded.updated_at
+    WHERE (integration_archives.delivery_state = 'failed' AND integration_archives.updated_at < ?7)
+      OR (excluded.receipt_json IS NOT NULL AND integration_archives.delivery_state IN ('failed', 'pending'))`)
+    .bind(archiveId, operation.account_id, input.media.mediaSha256, input.action === "download" ? "download" : "automatic", timestamp, operation.id, operation.requested_at,
+      saved ? "confirmed" : "pending", saved ? JSON.stringify({ ...saved, sender: "user" }) : null, saved ? "verified" : "not_checked", saved ? input.media.mediaSha256 : null));
   statements.push(db.prepare(`UPDATE integration_operations SET input_json = ?1, media_sha256 = ?2, archive_id = ?3,
     temp_key = ?4, admitted_at = COALESCE(admitted_at, ?5), status = CASE WHEN status = 'processing' THEN status ELSE 'queued' END, error_json = NULL, updated_at = ?5
     WHERE id = ?6 AND account_id = ?7 AND deleted_at IS NULL AND expires_at > ?5 AND status IN ('awaiting_upload', 'processing', 'queued')`)
@@ -181,9 +193,11 @@ export async function integrationArchiveFor(db: D1BatchDatabaseLike, operation: 
 
 export function integrationArchiveSnapshot(archive: IntegrationArchive | null) {
   const error = archive?.error_json ? JSON.parse(archive.error_json) as IntegrationError : null;
+  // Lens parses documentReceipt strictly, so only the four receipt fields leave the row; the sender marker stays inside.
+  const receipt = archive?.receipt_json ? JSON.parse(archive.receipt_json) as IntegrationSavedCopy & { sender?: string } : null;
   return {
     deliveryState: archive?.delivery_state ?? "not_required",
-    documentReceipt: archive?.receipt_json ? JSON.parse(archive.receipt_json) as Record<string, string> : null,
+    documentReceipt: receipt ? { botId: receipt.botId, chatId: receipt.chatId, messageId: receipt.messageId, fileId: receipt.fileId } : null,
     integrityState: archive?.integrity_state ?? "not_checked", roundTripSha256: archive?.round_trip_sha256 ?? null,
     error, retryReady: archive?.delivery_state === "failed" && error?.retryable === true,
   };

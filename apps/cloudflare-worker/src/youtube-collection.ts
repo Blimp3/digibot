@@ -27,7 +27,7 @@ export function youtubeCollectionUrl(input: string, kind: "playlist" | "channel"
     }
     canonical = `https://www.youtube.com/playlist?list=${list}`;
   } else {
-    // ponytail: ASCII handles/legacy names only; use the stable /channel/UC… URL for other names.
+    // Known limit: ASCII handles/legacy names only; use the stable /channel/UC… URL for other names.
     const path = url.pathname.replace(/\/$/u, "").replace(/\/videos$/u, "");
     if (!/^\/(?:@[A-Za-z0-9_.-]{3,30}|channel\/UC[A-Za-z0-9_-]{22}|(?:c|user)\/[A-Za-z0-9_.-]{1,100})$/u.test(path)) {
       throw new ApplicationError("INVALID_URL");

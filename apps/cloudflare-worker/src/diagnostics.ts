@@ -47,7 +47,7 @@ export async function handleDiagnostics(request: Request, env: Env): Promise<Res
           )
         GROUP BY lane`),
     ]);
-    // ponytail: one 100-object page per request; use the returned opaque cursor
+    // Known limit: one 100-object page per request; use the returned opaque cursor
     // for larger buckets. Inspection never deletes candidate objects.
     const page = await env.MEDIA_BUCKET.list({ prefix: "jobs/", limit: 100, ...(cursor ? { cursor } : {}) });
     if (page.truncated && !validCursor(page.cursor)) throw new Error("Invalid storage cursor");

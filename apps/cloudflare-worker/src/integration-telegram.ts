@@ -9,6 +9,7 @@ import {
   type IntegrationTelegramAccount,
 } from "./integration-auth";
 import {
+  TELEGRAM_PHOTO_CAVEAT,
   dispatchIntegrationOperation,
   integrationImageMime,
   validateIntegrationCheck,
@@ -16,6 +17,7 @@ import {
 } from "./integration-media";
 import {
   INTEGRATION_CHECK_BYTES,
+  INTEGRATION_TEMP_MS,
   IntegrationFailure,
   attachIntegrationMedia,
   getIntegrationOperation,
@@ -43,11 +45,18 @@ const RECONCILE_COMMAND = /^\/reconcile(?:@[A-Za-z0-9_]+)?\s+([0-9a-f-]{36})$/iu
 const APPROVE_CALLBACK = /^ia:approve:([0-9a-f-]{36}):(\d{6})$/iu;
 const TELEGRAM_FILE_ID = /^[A-Za-z0-9_-]{1,512}$/u;
 const CALLBACK_ID = /^[\s\S]{1,128}$/u;
+const CHECK_CALLBACK = "ic:check";
+const CHECK_BUTTON: TelegramInlineKeyboardButton = { text: "Check this image", callback_data: CHECK_CALLBACK };
+const CHECK_FALLBACK_TOAST = "Reply to the image with /check";
 
 const CHECK_DISCLOSURE = "This provenance check sends the selected bytes to the configured provider for processing under its retention terms; this provider path is not eligible for Zero Data Retention. It reports provenance evidence only and does not establish whether content is AI-generated, a deepfake, or human-made.";
-const HELP_TEXT = `Use /link UUID to connect Lens, /checkstats [24h|7d|30d|all] for shared statistics, /history for recent checks, or reply to a PNG, JPEG, or WebP with /check. ${CHECK_DISCLOSURE} A Telegram document is labeled with the exact bytes received; a Telegram photo is labeled Telegram photo copy.`;
+const HELP_TEXT = `Use /link UUID to connect Lens, /checkstats [24h|7d|30d|all] for shared statistics, /history for recent checks, or send a PNG, JPEG, or WebP (up to 4 MiB; HEIC is not supported) and tap "Check this image" under it or reply to it with /check; the verdict is replied under the image. ${TELEGRAM_PHOTO_CAVEAT} ${CHECK_DISCLOSURE} A Telegram document is labeled with the exact bytes received; a Telegram photo is labeled Telegram photo copy.`;
 
 export type IntegrationTelegramWaitUntil = (promise: Promise<unknown>) => void;
+
+function checkPromptText(photo: boolean): string {
+  return `Tap "Check this image", or reply to this image with /check, to run a provenance check. The image you sent stays in this chat as the saved copy; no copy of it is sent back. PNG, JPEG, or WebP up to 4 MiB; HEIC is not supported.${photo ? ` ${TELEGRAM_PHOTO_CAVEAT}` : ""} ${CHECK_DISCLOSURE}`;
+}
 
 type PrivateIdentity = Readonly<{ telegramUserId: string; privateChatId: string }>;
 
@@ -87,8 +96,10 @@ function bot(env: IntegrationEnv, requestTimeoutMs = 15_000): TelegramClient {
   return new TelegramClient({ token: env.TELEGRAM_BOT_TOKEN, apiBase: getWorkerConfig(env).telegramApiBase, requestTimeoutMs });
 }
 
-function deterministicUUID(accountId: string, updateId: number): string {
-  const hash = hashIntegrationBytes(`${accountId}\0${updateId}`);
+// Keyed on the Telegram update that asked, or on the prompt a tap answers ("ic:<message_id>"), so a
+// redelivered update and every tap on one prompt map to the same operation.
+function deterministicUUID(accountId: string, key: number | string): string {
+  const hash = hashIntegrationBytes(`${accountId}\0${key}`);
   const variant = ((Number.parseInt(hash[16] ?? "0", 16) & 0x3) | 0x8).toString(16);
   return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-${variant}${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
 }
@@ -127,8 +138,9 @@ async function sendText(
   text: string,
   waitUntil?: IntegrationTelegramWaitUntil,
   replyMarkup?: { inline_keyboard: TelegramInlineKeyboardButton[][] },
+  replyToMessageId?: number,
 ): Promise<void> {
-  await sendWork(bot(env).sendMessage(chatId, text, replyMarkup), waitUntil);
+  await sendWork(bot(env).sendMessage(chatId, text, replyMarkup, replyToMessageId), waitUntil);
 }
 
 function safeNumber(value: unknown): number {
@@ -177,12 +189,14 @@ function fileId(value: unknown): string | null {
   return typeof candidate.file_id === "string" && TELEGRAM_FILE_ID.test(candidate.file_id) ? candidate.file_id : null;
 }
 
-function imageReply(message: TelegramMessage): Readonly<{ fileId: string; inputKind: "original" | "telegram_photo_copy" }> | null {
+function imageReply(message: TelegramMessage): Readonly<{ fileId: string; inputKind: "original" | "telegram_photo_copy"; replyToMessageId: number }> | null {
   const reply = message.reply_to_message;
-  if (!reply || !privateChat(reply) || privateChat(reply) !== privateChat(message)) return null;
+  if (!reply || !privateChat(reply) || privateChat(reply) !== privateChat(message)
+    || !Number.isSafeInteger(reply.message_id) || reply.message_id <= 0) return null;
+  const replyToMessageId = reply.message_id;
   if (reply.document !== undefined && reply.photo === undefined) {
     const id = fileId(reply.document);
-    return id ? { fileId: id, inputKind: "original" } : null;
+    return id ? { fileId: id, inputKind: "original", replyToMessageId } : null;
   }
   if (reply.photo !== undefined && reply.document === undefined && Array.isArray(reply.photo)) {
     const candidates = reply.photo.filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null && !Array.isArray(item) && fileId(item) !== null);
@@ -193,7 +207,7 @@ function imageReply(message: TelegramMessage): Readonly<{ fileId: string; inputK
       return candidateSize >= currentSize ? candidate : current;
     }, null);
     const id = fileId(selected);
-    return id ? { fileId: id, inputKind: "telegram_photo_copy" } : null;
+    return id ? { fileId: id, inputKind: "telegram_photo_copy", replyToMessageId } : null;
   }
   return null;
 }
@@ -219,13 +233,20 @@ async function claimOperationAdmission(env: IntegrationEnv, operation: Integrati
   return claimed.meta?.changes === 1 ? token : null;
 }
 
-async function markOperationFailed(env: IntegrationEnv, operation: IntegrationOperation, error: unknown, claimToken: string | null): Promise<void> {
+/**
+ * A failed admission releases its reservation at once when nothing is retained: no temp_key and no R2 object left
+ * behind. Otherwise the slot (one of four) and its bytes would be held for 24 hours until the scheduled sweep.
+ * An object R2 would not delete is recorded as temp_key, so the sweep removes it and the reservation holds until
+ * then; bytes attached before the failure keep theirs for a controlled retry.
+ */
+async function markOperationFailed(env: IntegrationEnv, operation: IntegrationOperation, error: unknown, claimToken: string | null, orphanKey: string | null = null): Promise<void> {
   const failure = operationFailure(error);
   await env.DB.prepare(`UPDATE integration_operations SET status = 'failed', error_json = ?1, updated_at = ?2,
-    upload_token = NULL, upload_started_at = NULL
+    upload_token = NULL, upload_started_at = NULL, temp_key = COALESCE(temp_key, ?6),
+    reserved_bytes = CASE WHEN temp_key IS NULL AND ?6 IS NULL THEN 0 ELSE reserved_bytes END
     WHERE id = ?3 AND account_id = ?4 AND status IN ('awaiting_upload', 'queued') AND deleted_at IS NULL
       AND (?5 IS NULL OR upload_token = ?5)`)
-    .bind(JSON.stringify(failure), new Date().toISOString(), operation.id, operation.account_id, claimToken).run();
+    .bind(JSON.stringify(failure), new Date().toISOString(), operation.id, operation.account_id, claimToken, orphanKey).run();
 }
 
 async function releaseOperationAdmission(env: IntegrationEnv, operation: IntegrationOperation, claimToken: string): Promise<void> {
@@ -240,21 +261,21 @@ async function handleImageCheck(
   account: IntegrationTelegramAccount,
   message: TelegramMessage,
   waitUntil?: IntegrationTelegramWaitUntil,
-): Promise<Response> {
+  operationId = deterministicUUID(account.accountId, update.update_id),
+): Promise<Record<string, unknown>> {
   const selected = imageReply(message);
   if (!selected) {
     await sendText(env, account.chatId, `Reply to one PNG, JPEG, or WebP document or photo with /check. Captions alone do not start a check. ${CHECK_DISCLOSURE}`, waitUntil);
-    return jsonResponse({ ok: true, accepted: false, error: "INVALID_MEDIA" });
+    return { ok: true, accepted: false, error: "INVALID_MEDIA" };
   }
 
-  const operationId = deterministicUUID(account.accountId, update.update_id);
   const existing = await getIntegrationOperation(env.DB, account.accountId, operationId);
   if (existing) {
     if (existing.deleted_at !== null) {
       await sendText(env, account.chatId, "That action was deleted. Reply to the image again with /check to start a new action.", waitUntil);
-      return jsonResponse({ ok: true, accepted: false, error: "OPERATION_DELETED" });
+      return { ok: true, accepted: false, error: "OPERATION_DELETED" };
     }
-    return jsonResponse({ ok: true, duplicate: true, operationId });
+    return { ok: true, duplicate: true, operationId };
   }
 
   const client = bot(env, 30_000);
@@ -263,7 +284,7 @@ async function handleImageCheck(
     bytes = await client.downloadFile(selected.fileId, INTEGRATION_CHECK_BYTES);
   } catch {
     await sendText(env, account.chatId, "That image could not be retrieved or is larger than 4 MiB. Reply to the exact PNG, JPEG, or WebP and try again.", waitUntil);
-    return jsonResponse({ ok: true, accepted: false, error: "INVALID_MEDIA" });
+    return { ok: true, accepted: false, error: "INVALID_MEDIA" };
   }
 
   const mediaSha256 = hashIntegrationBytes(bytes);
@@ -271,7 +292,7 @@ async function handleImageCheck(
   if (!mimeType) {
     bytes.fill(0);
     await sendText(env, account.chatId, "The received bytes are not a PNG, JPEG, or WebP image.", waitUntil);
-    return jsonResponse({ ok: true, accepted: false, error: "UNSUPPORTED_MEDIA" });
+    return { ok: true, accepted: false, error: "UNSUPPORTED_MEDIA" };
   }
 
   const input: IntegrationInput = {
@@ -295,40 +316,50 @@ async function handleImageCheck(
   } catch (error) {
     bytes.fill(0);
     await sendText(env, account.chatId, errorText(error, "This image check could not be admitted."), waitUntil);
-    return jsonResponse({ ok: true, accepted: false, error: "INVALID_REQUEST" });
+    return { ok: true, accepted: false, error: "INVALID_REQUEST" };
   }
 
   const claimToken = await claimOperationAdmission(env, operation);
   if (!claimToken) {
     bytes.fill(0);
-    return jsonResponse({ ok: true, duplicate: true, operationId });
+    return { ok: true, duplicate: true, operationId };
   }
 
+  // The R2 key this admission may hold without D1 tracking it yet: set before the put, which is ambiguous when it
+  // throws, and cleared once attachIntegrationMedia has recorded it as temp_key.
+  let stored: string | null = null;
   try {
     const validated = await validateIntegrationCheck(env, account.accountId, input, bytes);
     const key = `integration/${account.accountId}/${operation.id}/telegram-image`;
+    stored = key;
     await env.MEDIA_BUCKET.put(key, bytes, {
       httpMetadata: { contentType: validated.media.mimeType, cacheControl: "no-store" },
       customMetadata: { mediaSha256: validated.media.mediaSha256, inputKind: validated.media.inputKind },
     });
-    try {
-      await attachIntegrationMedia(env.DB, operation, validated, key);
-    } catch (error) {
-      await env.MEDIA_BUCKET.delete(key).catch(() => undefined);
-      throw error;
-    }
+    // The image message the user sent is the saved copy: getFile already returned these exact bytes and they were
+    // hashed above, so the archive is confirmed and verified at once and no copy of the image is sent back; a row a
+    // concurrent Lens Check is already sending is left alone (the retry edge is noted in retryIntegrationOperation).
+    const saved = { botId: env.TELEGRAM_BOT_TOKEN.split(":", 1)[0] ?? "", chatId: account.chatId, messageId: String(selected.replyToMessageId), fileId: selected.fileId };
+    await attachIntegrationMedia(env.DB, operation, validated, key, new Date(), saved);
+    stored = null;
     const admitted = await getIntegrationOperation(env.DB, account.accountId, operation.id);
     if (!admitted) throw new IntegrationFailure(503, "operation_unavailable", "The image check could not be admitted.", true);
-    const dispatch = dispatchIntegrationOperation(env, admitted);
+    // The verdict is replied under the checked image; Lens-started checks never set this.
+    const dispatch = dispatchIntegrationOperation(env, admitted, selected.replyToMessageId);
     await sendWork(dispatch, waitUntil);
     await releaseOperationAdmission(env, operation, claimToken);
     const inputLabel = selected.inputKind === "telegram_photo_copy" ? "Telegram photo copy" : "exact Telegram document bytes";
-    await sendText(env, account.chatId, `Image check ${operation.id} was accepted (${inputLabel}). Use /history for the result.`, waitUntil);
-    return jsonResponse({ ok: true, accepted: true, operationId });
+    await sendText(env, account.chatId, `Image check ${operation.id} was accepted (${inputLabel}). The verdict will normally be replied under the image; /history always keeps it.`, waitUntil);
+    return { ok: true, accepted: true, operationId };
   } catch (error) {
-    await markOperationFailed(env, operation, error, claimToken).catch(() => undefined);
+    // Release the untracked object so the failed admission frees its slot; if R2 refuses, hand the key to the sweep.
+    if (stored) {
+      try { await env.MEDIA_BUCKET.delete(stored); stored = null; }
+      catch { /* The key is recorded as temp_key below and reaped by cleanupIntegrationMedia. */ }
+    }
+    await markOperationFailed(env, operation, error, claimToken, stored).catch(() => undefined);
     await sendText(env, account.chatId, errorText(error, "The image could not be checked. Reply to the exact image and try again."), waitUntil);
-    return jsonResponse({ ok: true, accepted: false, error: operationFailure(error).code, operationId });
+    return { ok: true, accepted: false, error: operationFailure(error).code, operationId };
   } finally {
     bytes.fill(0);
   }
@@ -468,26 +499,45 @@ async function handleIntegrationCallback(
   waitUntil?: IntegrationTelegramWaitUntil,
 ): Promise<Response | null> {
   const callback = callbackRecord(update);
-  if (!callback || typeof callback.data !== "string" || !APPROVE_CALLBACK.test(callback.data)) return null;
+  if (!callback || typeof callback.data !== "string") return null;
+  const approve = callback.data.match(APPROVE_CALLBACK);
+  const pairing = approve ? { pairId: approve[1]!, confirmationCode: approve[2]! } : null;
+  if (!pairing && callback.data !== CHECK_CALLBACK) return null;
   const callbackId = typeof callback.id === "string" && CALLBACK_ID.test(callback.id) ? callback.id : null;
   const message = callbackMessage(callback.message);
   const fromId = telegramNumericId((callback.from as { id?: unknown } | undefined)?.id);
   if (!callbackId || !message || !fromId || fromId !== telegramNumericId(message.chat.id)) return jsonResponse({ ok: true, ignored: true });
-  const match = callback.data.match(APPROVE_CALLBACK);
-  if (!match || !validUUID(match[1])) return jsonResponse({ ok: true, ignored: true });
+  if (pairing && !validUUID(pairing.pairId)) return jsonResponse({ ok: true, ignored: true });
   const account = await accountForMessage(env, { ...message, from: { id: Number(fromId) } }, Math.floor(Date.now() / 1000));
   if (!account) return jsonResponse({ ok: true, ignored: true });
   const client = bot(env);
+  // Answer the tap and retire the button together; neither outcome changes what was already done.
+  const finish = (text: string): Promise<void> => sendWork(Promise.allSettled([
+    client.answerCallbackQuery(callbackId, text), client.clearInlineKeyboard(account.chatId, String(message.message_id)),
+  ]), waitUntil);
+  if (!pairing) {
+    // The prompt answers the image, so the tapped message's reply_to_message is the image to check.
+    // Telegram omits it for old or inaccessible messages, and a check lives 24 h from its request.
+    const fresh = typeof message.date === "number" && message.date * 1000 > Date.now() - INTEGRATION_TEMP_MS;
+    if (!fresh || !imageReply(message)) {
+      await finish(CHECK_FALLBACK_TOAST);
+      return jsonResponse({ ok: true, accepted: false, error: fresh ? "INVALID_MEDIA" : "PROMPT_EXPIRED" });
+    }
+    // One check per prompt: every tap on it is the same operation, so a second or redelivered tap answers
+    // duplicate before any download, and the prompt's own date keeps the request hash stable.
+    try {
+      const outcome = await handleImageCheck(update, env, account, message, waitUntil, deterministicUUID(account.accountId, `ic:${message.message_id}`));
+      await finish(outcome.accepted ? "Check started. The verdict will normally be replied under the image; /history always keeps it."
+        : outcome.duplicate ? "This check is already running." : "The check could not start.");
+      return jsonResponse(outcome);
+    } catch {
+      await finish("The check could not start.");
+      return jsonResponse({ ok: true, accepted: false, error: "INTERNAL_ERROR" });
+    }
+  }
   try {
-    const approved = await approveIntegrationPairing(env, {
-      pairId: match[1]!, confirmationCode: match[2]!, telegramUserId: account.telegramUserId, privateChatId: account.chatId,
-    });
-    const text = approved ? "Lens link approved." : "This link is unavailable or the code does not match.";
-    const work = Promise.allSettled([
-      client.answerCallbackQuery(callbackId, text),
-      ...(message.message_id ? [client.clearInlineKeyboard(account.chatId, String(message.message_id))] : []),
-    ]);
-    await sendWork(work, waitUntil);
+    const approved = await approveIntegrationPairing(env, { ...pairing, telegramUserId: account.telegramUserId, privateChatId: account.chatId });
+    await finish(approved ? "Lens link approved." : "This link is unavailable or the code does not match.");
     return jsonResponse({ ok: true, approved: Boolean(approved) });
   } catch {
     await sendWork(client.answerCallbackQuery(callbackId, "The link could not be approved."), waitUntil);
@@ -550,7 +600,7 @@ async function handleAccountMessage(
     await sendText(env, account.chatId, revoked ? "Invitation revoked." : "That invitation is unavailable, already used, or already revoked.", waitUntil);
     return jsonResponse({ ok: true, revoked });
   }
-  if (CHECK_COMMAND.test(text)) return handleImageCheck(update, env, account, message, waitUntil);
+  if (CHECK_COMMAND.test(text)) return jsonResponse(await handleImageCheck(update, env, account, message, waitUntil));
   const history = text.match(HISTORY_COMMAND);
   if (history) {
     const period = history[1]?.toLowerCase() ?? null;
@@ -615,10 +665,12 @@ async function handleAccountMessage(
     return handleReconcile(env, account, message, reconcile[1]!, waitUntil);
   }
 
-  if (!text && !message.caption && (Array.isArray(message.photo)
-    || (typeof message.document === "object" && message.document !== null && "mime_type" in message.document
-      && typeof message.document.mime_type === "string" && /^image\/(?:png|jpeg|webp)$/u.test(message.document.mime_type)))) {
-    await sendText(env, account.chatId, `Reply to this image with /check to verify it and save the received bytes as a Telegram document. ${CHECK_DISCLOSURE}`, waitUntil);
+  const photo = Array.isArray(message.photo);
+  if (!text && (photo || (typeof message.document === "object" && message.document !== null && "mime_type" in message.document
+    && typeof message.document.mime_type === "string" && /^image\/(?:png|jpeg|webp)$/u.test(message.document.mime_type)))) {
+    // A caption never starts a check; the prompt answers the image and only its button or /check does.
+    await sendText(env, account.chatId, checkPromptText(photo), waitUntil, { inline_keyboard: [[CHECK_BUTTON]] },
+      Number.isSafeInteger(message.message_id) && message.message_id > 0 ? message.message_id : undefined);
     return jsonResponse({ ok: true, accepted: false, checkAvailable: true });
   }
 

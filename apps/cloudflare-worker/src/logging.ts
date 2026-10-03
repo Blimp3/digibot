@@ -22,9 +22,6 @@ export type WorkflowErrorName =
 
 export interface StructuredLogFields {
   jobId?: string;
-  // Accepted for source compatibility with older call sites, but deliberately
-  // never serialized: Telegram update identifiers are not operational log data.
-  updateId?: string;
   sourceHost?: string;
   sourceUrlHash?: string;
   state?: string;
@@ -40,6 +37,22 @@ export interface StructuredLogFields {
   workflowAttempt?: number;
   workflowErrorName?: WorkflowErrorName;
   workflowErrorCodeRecovered?: boolean;
+  containerDiagnostics?: unknown;
+}
+
+function safeContainerDiagnostics(value: unknown): Record<string, string | number | boolean> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+  const fields = value as Record<string, unknown>;
+  const safe: Record<string, string | number | boolean> = {};
+  const stages = ["request", "dependency_check", "direct_resolve", "probe", "format_selection", "download_process", "download_output", "media_verify", "transcode", "staging", "telegram_delivery", "r2_upload", "internal"];
+  const reasons = ["invalid_input", "unauthorized", "unsupported_source", "unsupported_media", "auth_required", "media_private", "source_unavailable", "no_formats", "js_challenge_failed", "network_error", "invalid_probe_output", "invalid_probe_metadata", "source_rate_limited", "http_forbidden", "source_blocked", "network_blocked", "limit_exceeded", "timeout", "process_failed", "dependency_missing", "media_processing_failed", "telegram_rate_limited", "telegram_failure", "storage_failure", "internal"];
+  if (typeof fields.error_stage === "string" && stages.includes(fields.error_stage)) safe.container_error_stage = fields.error_stage;
+  if (typeof fields.failure_reason === "string" && reasons.includes(fields.failure_reason)) safe.container_failure_reason = fields.failure_reason;
+  if (typeof fields.process_name === "string" && ["yt-dlp", "ffmpeg", "ffprobe"].includes(fields.process_name)) safe.process_name = fields.process_name;
+  if (typeof fields.process_exit_code === "number" && Number.isInteger(fields.process_exit_code)
+    && fields.process_exit_code >= -(2 ** 31) && fields.process_exit_code < 2 ** 31) safe.process_exit_code = fields.process_exit_code;
+  if (typeof fields.process_timed_out === "boolean") safe.process_timed_out = fields.process_timed_out;
+  return safe;
 }
 
 /** Emit only allowlisted operational fields; never pass a complete URL/token. */
@@ -65,6 +78,7 @@ export function logStructured(event: string, fields: StructuredLogFields = {}): 
     ...(typeof fields.workflowErrorCodeRecovered === "boolean"
       ? { workflow_error_code_recovered: fields.workflowErrorCodeRecovered }
       : {}),
+    ...safeContainerDiagnostics(fields.containerDiagnostics),
   };
   console.log(JSON.stringify(payload));
 }

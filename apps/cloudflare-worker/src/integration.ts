@@ -1,4 +1,5 @@
 import { readIntegrationJson } from "./integration-io";
+import { createLensLinkDownload } from "./integration-link";
 import { authenticateIntegrationRequest, handleIntegrationAuth } from "./integration-auth";
 import { getWorkerConfig } from "./config";
 import { encryptSourceUrl, hmacSha256Hex } from "./crypto";
@@ -50,7 +51,11 @@ function cors(request: Request, response: Response): Response {
   return new Response(response.body, { status: response.status, headers });
 }
 
-export async function handleIntegrationRequest(request: Request, env: IntegrationGatewayEnv): Promise<Response | null> {
+export async function handleIntegrationRequest(
+  request: Request,
+  env: IntegrationGatewayEnv,
+  waitUntil?: (promise: Promise<unknown>) => void,
+): Promise<Response | null> {
   const url = new URL(request.url);
   if (url.pathname !== PREFIX && !url.pathname.startsWith(`${PREFIX}/`)) return null;
   if (env.INTEGRATION_ENABLED !== "true") return integrationJson({ error: { code: "integration_disabled", message: "Connected media features are not enabled.", retryable: false } }, 404);
@@ -87,6 +92,8 @@ export async function handleIntegrationRequest(request: Request, env: Integratio
       }, validateIntegrationCreatedAt(request.headers.get("x-integration-created-at")));
       if (operation.status === "queued") await dispatchIntegrationOperation(env, operation);
       response = integrationJson(await integrationOperationSnapshot(env.DB, operation), 202);
+    } else if (path === "/link-downloads" && request.method === "POST") {
+      response = integrationJson(await createLensLinkDownload(request, env, authentication.principal, waitUntil), 202);
     } else if (path === "/history" && request.method === "GET") {
       response = integrationJson(await integrationHistory(env, account, url));
     } else if (path === "/stats" && request.method === "GET") {
@@ -252,10 +259,13 @@ export async function deleteIntegrationHistory(env: IntegrationEnv, account: Int
 }
 
 async function deleteIntegrationArchive(env: IntegrationEnv, account: IntegrationAccount, sha256: string): Promise<void> {
+  // A receipt with sender "user" is the image message the user sent for a Telegram check. Bots can delete incoming
+  // private messages for 48 hours, so it is never a deletion target; only bot-sent documents are.
   const archives = await env.DB.prepare(`SELECT DISTINCT a.id, a.receipt_json FROM integration_archives a
-    WHERE a.account_id = ?1 AND a.media_sha256 = ?2 AND a.delivery_state = 'confirmed' AND a.receipt_json IS NOT NULL`)
+    WHERE a.account_id = ?1 AND a.media_sha256 = ?2 AND a.delivery_state = 'confirmed' AND a.receipt_json IS NOT NULL
+      AND json_extract(a.receipt_json, '$.sender') IS NULL`)
     .bind(account.accountId, sha256).all<{ id: string; receipt_json: string }>();
-  if (!archives.results.length) throw new IntegrationFailure(404, "not_found", "No confirmed saved document was found.");
+  if (!archives.results.length) throw new IntegrationFailure(404, "not_found", "No saved document sent by the bot was found. A copy you sent yourself stays in Telegram.");
   const telegram = new TelegramClient({ token: env.TELEGRAM_BOT_TOKEN, apiBase: getWorkerConfig(env).telegramApiBase });
   for (const archive of archives.results) {
     const receipt = JSON.parse(archive.receipt_json) as { chatId: string; messageId: string };
@@ -278,6 +288,11 @@ export async function retryIntegrationOperation(env: IntegrationEnv, account: In
   if (Date.parse(operation.expires_at) <= Date.now() || (!operation.temp_key && !operation.source_cipher && archive?.delivery_state !== "confirmed")) throw new IntegrationFailure(410, "media_expired", "Select the exact file again to start a new action.");
   const now = new Date().toISOString();
   const statements = [];
+  // Known limit: a Telegram-started check whose bytes already had a 'sending' row (a concurrent Lens Check of the same
+  // image) never applied its user receipt; when that send then fails retryably, this reset lets the retried run
+  // send the document after all, with an ordinary bot receipt. Accepted edge: the saved copy exists only in the
+  // admission call, so re-applying it here would mean keeping it on the operation (input_json or a column) and
+  // stripping it from every snapshot Lens parses strictly.
   if (archive?.delivery_state === "failed") {
     const error = JSON.parse(archive.error_json ?? "null") as { retryable?: boolean } | null;
     if (!error?.retryable) throw new IntegrationFailure(409, "retry_unavailable", "This delivery cannot be retried automatically.");

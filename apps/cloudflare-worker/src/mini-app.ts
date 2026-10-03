@@ -684,7 +684,7 @@ export const MINI_APP_JS = String.raw`
       var incoming = historyItems(payload);
       state.items = append ? state.items.concat(incoming) : incoming;
       state.cursor = nextCursor(payload);
-      state.summary = payload.summary || null;
+      if (!append) state.summary = payload.summary || null;
       state.loaded = true;
       setStatus(notice || "");
     }).catch(function () {

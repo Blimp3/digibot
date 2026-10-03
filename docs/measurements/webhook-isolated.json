@@ -1,0 +1,38 @@
+{
+  "baselineCommit": "1a6e24beb3d90864b12c6cc5727c32b5ae71c212",
+  "sourceCommit": "f54c97d1b99594371807b72cd347fab3e5f00d36",
+  "sourceDirty": true,
+  "location": "local Mac, real workerd D1, synthetic 250ms Telegram, immediate simulated Workflow start",
+  "before": {
+    "webhook": {
+      "samples": 100,
+      "p50Ms": 350.89845799999966,
+      "p95Ms": 440.5952499999985,
+      "p99Ms": 555.5543749999997
+    },
+    "acceptedNotice": {
+      "samples": 100,
+      "p50Ms": 326.910167,
+      "p95Ms": 382.3863340000007,
+      "p99Ms": 535.2893330000006
+    },
+    "failureRate": 0,
+    "sends": 100
+  },
+  "after": {
+    "webhook": {
+      "samples": 100,
+      "p50Ms": 81.14824999999837,
+      "p95Ms": 113.61650000000373,
+      "p99Ms": 145.26583299999766
+    },
+    "acceptedNotice": {
+      "samples": 100,
+      "p50Ms": 377.17033300000185,
+      "p95Ms": 412.6790409999958,
+      "p99Ms": 447.265916999997
+    },
+    "failureRate": 0,
+    "sends": 100
+  }
+}

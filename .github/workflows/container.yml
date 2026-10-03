@@ -1,0 +1,50 @@
+name: Container images
+
+# The image context is apps/downloader-container, so only changes there need a rebuild.
+on:
+  pull_request:
+    paths: ["apps/downloader-container/**", ".github/workflows/container.yml"]
+  push:
+    branches: [main]
+    paths: ["apps/downloader-container/**", ".github/workflows/container.yml"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  container:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        dockerfile: [Dockerfile, Dockerfile.transcription]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: apps/downloader-container
+          file: apps/downloader-container/${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: private-media-downloader:ci
+          cache-from: type=gha,scope=${{ matrix.dockerfile }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.dockerfile }}
+      - name: Check Container dependencies
+        run: docker run --rm --platform linux/amd64 private-media-downloader:ci python -m downloader_container --check-dependencies
+      - name: Exercise production image health endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          container_id="$(docker run --detach --rm --platform linux/amd64 --publish 127.0.0.1::8080 private-media-downloader:ci)"
+          cleanup() { docker stop "$container_id" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          host_port="$(docker port "$container_id" 8080/tcp | awk -F: 'NR==1 {print $NF}')"
+          test -n "$host_port"
+          curl --fail --silent --show-error --retry 30 --retry-delay 1 --retry-connrefused --retry-all-errors "http://127.0.0.1:${host_port}/health"

@@ -3,11 +3,11 @@ import { getWorkerConfig } from "./config";
 import { TelegramApiError, TelegramClient } from "./telegram";
 import { readIntegrationBytes, readIntegrationJson } from "./integration-io";
 import { prepareIntegrationAudio } from "./integration-audio";
-import { parseIntegrationVerifierResponse } from "./integration-verifier";
+import { AUDIO_POLICY, IMAGE_POLICY, parseIntegrationVerifierResponse, type IntegrationVerifierResult } from "./integration-verifier";
 import {
   INTEGRATION_CHECK_BYTES, IntegrationFailure, attachIntegrationMedia, getIntegrationOperation,
   hashIntegrationBytes, integrationArchiveFor,
-  type IntegrationAccount, type IntegrationInput, type IntegrationOperation, type IntegrationError,
+  type IntegrationAccount, type IntegrationInput, type IntegrationMedia, type IntegrationOperation, type IntegrationError,
 } from "./integration-store";
 import type { Env } from "./types";
 
@@ -20,22 +20,58 @@ export type IntegrationEnv = Env & {
   };
 };
 
-export interface IntegrationWorkflowParams { accountId: string; operationId: string; generation: number }
+/** replyToMessageId is the Telegram image message a /check answered; the verdict is replied under it. */
+export interface IntegrationWorkflowParams { accountId: string; operationId: string; generation: number; replyToMessageId?: number }
 export interface IntegrationStep {
   do<T>(name: string, options: { retries: { limit: number; delay: string; backoff: "exponential" }; timeout: string }, callback: () => Promise<T>): Promise<T>;
 }
 const DATABASE_STEP = { retries: { limit: 5, delay: "5 seconds", backoff: "exponential" as const }, timeout: "1 minute" };
 const EFFECT_STEP = { retries: { limit: 0, delay: "1 second", backoff: "exponential" as const }, timeout: "25 minutes" };
 
-const IMAGE_POLICY = "content-provenance-c2pa-6273cdcb4f27-v2";
-const AUDIO_POLICY = "openai-content-provenance-v1";
 const UPLOAD_TIMEOUT_MS = 60_000;
+// The same labels the Mini App shows (mini-app.ts integrationVerdictLabels); a test keeps them equal.
+const VERDICT_LABELS: Record<string, string> = {
+  openai_signal_detected: "Supported signal detected",
+  no_supported_openai_signal: "No supported signal detected",
+  indeterminate: "Evidence is indeterminate",
+};
+/** Why a Telegram photo is a weaker input than a document; the image prompt and the verdict reply share it. */
+export const TELEGRAM_PHOTO_CAVEAT = "Telegram recompresses photos and strips Content Credentials, so send the image as a File for a reliable check.";
+const PHOTO_COPY_CAVEAT = `This checked a Telegram photo copy: ${TELEGRAM_PHOTO_CAVEAT}`;
+const NOT_PROOF_LINE = "No supported signal is not proof of human origin.";
+
+function telegramClient(env: IntegrationEnv, requestTimeoutMs: number): TelegramClient {
+  return new TelegramClient({ token: env.TELEGRAM_BOT_TOKEN, apiBase: getWorkerConfig(env).telegramApiBase, requestTimeoutMs });
+}
+
+/** The Telegram reply for a check started in Telegram: the saved evidence or the processing error. */
+export function checkVerdictText(value: { evidence: IntegrationVerifierResult } | IntegrationError, inputKind: IntegrationMedia["inputKind"]): string {
+  const lines: string[] = [];
+  if ("evidence" in value) {
+    const { evidence } = value;
+    lines.push(VERDICT_LABELS[evidence.verdict] ?? "Evidence is indeterminate", evidence.summary || "No evidence summary available.");
+    const credentials = evidence.contentCredentials;
+    // Name the issuer only when the pinned trust list vouches for the signer: a
+    // self-signed manifest can claim any issuer, and Telegram auto-links text.
+    if (credentials) {
+      const trust = credentials.signerTrusted
+        ? `; signer trusted by the pinned list${credentials.issuer ? `; issuer: ${credentials.issuer}` : ""}`
+        : credentials.status === "verified" ? " (signer not trusted by the pinned list)" : "";
+      lines.push(`C2PA status: ${credentials.status}${trust}`);
+    }
+  } else {
+    lines.push(`Check failed: ${value.message}`);
+  }
+  if (inputKind === "telegram_photo_copy") lines.push(PHOTO_COPY_CAVEAT);
+  lines.push(NOT_PROOF_LINE);
+  return lines.join("\n");
+}
 
 export function integrationImageMime(bytes: Uint8Array): string | null {
   if (bytes.length >= 8 && [137, 80, 78, 71, 13, 10, 26, 10].every((byte, index) => bytes[index] === byte)) return "image/png";
   if (bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) return "image/jpeg";
   const text = new TextDecoder("ascii").decode(bytes.subarray(0, 12));
-  return text.startsWith("RIFF") && text.endsWith("WEBP") ? "image/webp" : null;
+  return bytes.length >= 12 && text.startsWith("RIFF") && text.endsWith("WEBP") ? "image/webp" : null;
 }
 
 function verificationForm(input: IntegrationInput, bytes: Uint8Array): FormData {
@@ -109,7 +145,9 @@ export async function storeIntegrationUpload(env: IntegrationEnv, account: Integ
     if (length !== input.media.byteLength || hash.digest("hex") !== input.media.mediaSha256) throw new IntegrationFailure(400, "hash_mismatch", "The uploaded bytes do not match the selected file.");
     if (input.media.mimeType.startsWith("image/") && integrationImageMime(prefix.subarray(0, prefixLength)) !== input.media.mimeType) throw new IntegrationFailure(400, "invalid_media", "The image type does not match its bytes.");
     let validated = input;
-    if (input.action === "check") {
+    // The stream above enforces an image's exact length, SHA-256 and magic bytes, and /verify-image
+    // re-parses the same form, so only audio Checks still need /validate (it measures the duration).
+    if (input.action === "check" && !input.media.mimeType.startsWith("image/")) {
       const object = await env.MEDIA_BUCKET.get(key);
       if (!object) throw new IntegrationFailure(503, "media_unavailable", "The temporary file is unavailable.", true);
       const bytes = await readIntegrationBytes(new Response(object.body), INTEGRATION_CHECK_BYTES);
@@ -136,12 +174,13 @@ export function integrationWorkflowId(operation: Pick<IntegrationOperation, "acc
   return `${hashIntegrationBytes(`${operation.account_id}\0${operation.id}`)}-${operation.run_generation}`;
 }
 
-export async function dispatchIntegrationOperation(env: IntegrationEnv, operation: IntegrationOperation): Promise<void> {
+export async function dispatchIntegrationOperation(env: IntegrationEnv, operation: IntegrationOperation, replyToMessageId?: number): Promise<void> {
   if (!env.INTEGRATION_WORKFLOW) throw new IntegrationFailure(503, "integration_unavailable", "Media processing is temporarily unavailable.", true);
   // A durable row remains queued if dispatch is interrupted; recovery uses this
   // same ID. Explicit retries increment the generation, never the action count.
   try { await env.INTEGRATION_WORKFLOW.create({ id: integrationWorkflowId(operation), params: {
     accountId: operation.account_id, operationId: operation.id, generation: operation.run_generation,
+    ...(replyToMessageId !== undefined ? { replyToMessageId } : {}),
   }, retention: { successRetention: "1 day", errorRetention: "1 day" } }); }
   catch { /* The queued row remains recoverable under the same instance ID. */ }
 }
@@ -179,7 +218,7 @@ async function archiveIntegrationImage(env: IntegrationEnv, operation: Integrati
   const account = await env.DB.prepare("SELECT telegram_chat_id FROM integration_accounts WHERE id = ?1 AND status = 'active'")
     .bind(operation.account_id).first<{ telegram_chat_id: string }>();
   if (!account) return;
-  const telegram = new TelegramClient({ token: env.TELEGRAM_BOT_TOKEN, apiBase: getWorkerConfig(env).telegramApiBase, requestTimeoutMs: 60_000 });
+  const telegram = telegramClient(env, 60_000);
   if (archive.delivery_state === "pending") {
     const claim = await env.DB.prepare(`UPDATE integration_archives SET delivery_state = 'sending', attempt_started_at = ?1, updated_at = ?1
       WHERE id = ?2 AND account_id = ?3 AND delivery_state = 'pending'
@@ -280,6 +319,23 @@ export async function processIntegrationOperation(env: IntegrationEnv, params: I
     if (operation.action === "download" || operation.result_json) return { result: operation.result_json, error: null };
     try { return { result: await verifyIntegrationOperation(env, operation, JSON.parse(operation.input_json!) as IntegrationInput), error: null }; }
     catch (error) { return { result: null, error: integrationProcessingError(error) }; }
+  });
+  // Known limit: the reply target lives only in this run's params, which D1 never
+  // stores, so a cron re-dispatch or a /checkretry run (a new instance) sends no
+  // reply; the upgrade path is a nullable reply_to_message_id column. The step
+  // runs before "save evidence" so a recovery restart from that step reuses this
+  // checkpoint instead of sending the notice again.
+  if (params.replyToMessageId !== undefined) await step.do("notify telegram", DATABASE_STEP, async () => {
+    const operation = await getIntegrationOperation(env.DB, accountId, operationId);
+    if (!operation?.input_json || operation.deleted_at || operation.run_generation !== generation) return;
+    const account = await env.DB.prepare("SELECT telegram_chat_id FROM integration_accounts WHERE id = ?1 AND status = 'active'")
+      .bind(accountId).first<{ telegram_chat_id: string }>();
+    const payload = outcome.result ? JSON.parse(outcome.result) as { evidence: IntegrationVerifierResult } : outcome.error;
+    if (!account || !payload) return;
+    const text = checkVerdictText(payload, (JSON.parse(operation.input_json) as IntegrationInput).media.inputKind);
+    // The outcome is checkpointed and History will show it; a lost notice never fails or repeats the action.
+    try { await telegramClient(env, 15_000).sendMessage(account.telegram_chat_id, text, undefined, params.replyToMessageId); }
+    catch { /* Telegram rejected or lost the notice. */ }
   });
   // The provider response is checkpointed before D1 persistence. A D1 outage
   // retries only this write and cannot turn completed evidence into a lost call.
